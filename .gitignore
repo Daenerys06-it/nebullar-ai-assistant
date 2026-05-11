@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ChromaDB
+chroma_db/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# PDF raw files (keep processed md only)
+data/raw/
+
+# Secrets
+.env
