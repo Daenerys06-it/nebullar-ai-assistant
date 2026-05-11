@@ -1,3 +1,4 @@
 - [User Profile](user_profile.md) — Jiayi Wang, KOZEN FAE, AI graduate student, Java+Python, seeking AI career
 - [KOZEN AI Assistant](project_kozen_ai_assistant.md) — RAG+Agent project for financial terminal SDK support, on GitHub Private
 - [Work Style](feedback_work_style.md) — Prefers "convince first, build later", pragmatic over flashy, bite-sized validation
+- [Personal Relationship](personal_relationship.md) — 感情：暗恋一位群友女生，北京人在美国留学，进展与困惑
