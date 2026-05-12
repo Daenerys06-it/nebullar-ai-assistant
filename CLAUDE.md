@@ -13,7 +13,7 @@
 - LLM: DeepSeek API（便宜且中文友好）
 - 向量数据库: ChromaDB（轻量，零配置）
 - 前端: Streamlit
-- 嵌入模型: text-embedding-3-small 或 BGE 中文
+- 嵌入模型: paraphrase-multilingual-MiniLM-L12-v2（跨语言中英文检索）
 - 开发方式: Claude Code + DeepSeek Vibe Coding
 - 语言: Python
 
@@ -28,7 +28,7 @@ kozen-ai-assistant/
 │   └── cases.jsonl             # FAE 支持案例（手动积累）
 ├── src/
 │   ├── parse_docs.py           # PDF → Markdown
-│   ├── ingest.py               # 文档切片 + 向量化入库（待开发）
+│   ├── ingest.py               # 文档切片 + 向量化入库（已完成，待运行）
 │   ├── rag.py                  # 检索层（待开发）
 │   ├── agent.py                # Agent 核心逻辑（待开发）
 │   └── app.py                  # Streamlit 前端（待开发）
@@ -46,7 +46,18 @@ kozen-ai-assistant/
 - 使用 Vibe Coding，每次只写一个函数，跑通再下一个
 - FAE 问题日志持续积累到 cases.jsonl
 
+## 进度
+- [x] parse_docs.py — PDF转Markdown，按模块拆分（23个md）
+- [x] error_codes.json — Financial SDK错误码结构化（100+条）
+- [x] ingest.py — 文档切片+向量化入库（已写好，待首次运行下载模型）
+- [ ] rag.py — 检索层
+- [ ] agent.py — Agent核心逻辑
+- [ ] app.py — Streamlit前端
+
 ## 笔记
-- 公司电脑没有 Python，需要安装后再开发
+- Python 3.11.9 已安装（C:\Program Files\Python311）
+- 用户环境有代理 127.0.0.1:7897，pip install 需加 --proxy
+- Python Scripts 路径已加入用户 PATH（含 setx 永久配置）
 - 公司电脑 pdftotext 可用（MinGW 环境）
 - 文档来源：两份官方 PDF，已用 pdftotext 提取文本并按模块拆分
+- 两份 SDK 文档对应公司 K 产品（Financial SDK）和 D 产品（Terminal Manager SDK），均为 Android POS 终端

@@ -38,7 +38,7 @@ streamlit run src/app.py
 
 - **LLM**: Claude API / DeepSeek API
 - **向量数据库**: ChromaDB
-- **嵌入模型**: text-embedding-3-small
+- **嵌入模型**: paraphrase-multilingual-MiniLM-L12-v2（跨语言中英文检索）
 - **前端**: Streamlit
 
 ## 数据说明
