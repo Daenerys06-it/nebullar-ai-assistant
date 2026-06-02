@@ -4,6 +4,7 @@
 # 关键词检索：BM25算法（best matching25)
 # RRF融合排序：将向量检索和关键词检索的结果进行融合排序，综合两者的优势，提高检索效果。
 import os
+import re
 import chromadb
 from rank_bm25 import BM25Okapi  # BM25 关键词检索算法
 
@@ -119,3 +120,11 @@ def reciprocal_rank_fusion(
     # 按 RRF 分数降序排列
     sorted_docs = sorted(merged.values(), key=lambda d: d["rrf_score"], reverse=True)
     return sorted_docs
+
+
+def search(query: str, top_k: int = 5) -> list[dict]:
+    """混合检索统一入口：调 vector_search + keyword_search → RRF 融合 → 返回 top_k。"""
+    v_res = vector_search(query, top_k * 2)           # 多取一些，给 RRF 更大的候选池
+    k_res = keyword_search(query, top_k * 2)
+    rrf_res = reciprocal_rank_fusion(v_res, k_res)    # 默认 k=60
+    return rrf_res[:top_k]
