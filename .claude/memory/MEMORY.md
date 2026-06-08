@@ -4,3 +4,5 @@
 - [Work Style](feedback_work_style.md) — Prefers "convince first, build later", pragmatic over flashy, bite-sized validation
 - [Case Entry Workflow](feedback_cases_workflow.md) — Dictate FAE cases conversationally, I append to cases.jsonl
 - [Personal Relationship](personal_relationship.md) — 感情：暗恋一位群友女生，北京人在美国留学，进展与困惑
+- [Kiosk Launcher Project](project_kiosk_launcher.md) — 新需求：定制 Android Launcher 对标商米 Sunmi，AI 辅助开发
+- [Kiosk Launcher Tech Plan](reference_kiosk_launcher_tech.md) — 8大模块技术方案 + Kotlin 代码 + AI 工具选型

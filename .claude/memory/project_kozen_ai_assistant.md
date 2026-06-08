@@ -43,10 +43,15 @@ originSessionId: 503bdc81-3792-4c10-af93-e03db3930c46
 - 编码兼容: UTF-8 → GBK → UTF-8(errors=replace)
 
 ### 开发计划
-- [ ] retrieve.py — 混合检索（ChromaDB + BM25 + RRF）
+- [x] retrieve.py — vector_search 已写（ChromaDB向量检索），待加BM25+RRF
 - [ ] memory.py — 长期记忆 + 会话管理
 - [ ] agent.py — LangGraph Agent 核心逻辑
 - [ ] app.py — Streamlit 前端
+
+### 2026-05-25
+- 公司知识库（72 md）替换旧数据，545 chunks 入库 ChromaDB
+- retrieve.py 开始开发，用户想边学边写
+- 教法：先讲概念 → 给函数签名 → 用户试写 → 我补修
 
 ### 核心能力目标
 - 多轮排查引导（Agent 主动反问澄清）
