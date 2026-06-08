@@ -1,64 +1,191 @@
 ---
 name: reference_kiosk_launcher_tech
-description: Kiosk Launcher 完整技术方案 — 8大模块拆解 + Android 代码 + AI 工具选型
+description: Kiosk Launcher 双方案对比 — 应用级 Kiosk vs ROM 级定制，含工具链与学习路线
 type: reference
 ---
 
-## Kiosk Launcher 技术方案（对标商米 Sunmi）
+## 一张图看懂两个方案
 
-### 概念
-Kiosk Launcher = 一个被设为默认桌面的 Android App，接管系统桌面，同时把用户"锁"在允许的操作范围内。最终效果：用户感觉不到这是 Android，就像 ATM 机一样。
-
-### 8 大功能模块
-
-| # | 模块 | 说明 |
-|---|------|------|
-| 1 | 基础 Launcher | 声明 HOME category 的 Activity，接管桌面 |
-| 2 | Kiosk 锁定 | DevicePolicyManager + LockTask 模式，白名单锁定 |
-| 3 | DeviceAdminReceiver | 设备管理器，获取系统级控制权的前提 |
-| 4 | SystemUI 隐藏 | 隐藏状态栏/导航栏/通知，禁用全局按键 |
-| 5 | 开机自启 | BOOT_COMPLETED 广播 → 自动拉起 Launcher |
-| 6 | 远程管理 (MDM) | 远程下发白名单/APK升级/重启/擦除 |
-| 7 | 崩溃保护 | 全局异常捕获 + 看门狗定时检查 Launcher 存活 |
-| 8 | 管理员设置 | 隐蔽入口 + 密码保护，WiFi/白名单/日志管理 |
-
-### 核心技术栈
-- **语言**: Kotlin
-- **关键 API**: DevicePolicyManager, LockTask, PackageInstaller Session, BOOT_COMPLETED
-- **远程管理**: Retrofit + 轮询或 WebSocket/MQTT 长连接
-- **最简实现**: 可在 Android Studio 中新建项目，AI 生成 70%+ 代码
-
-### AI 工具选型
-| 阶段 | 工具 | 用途 |
-|------|------|------|
-| 代码生成 | Claude Code / Cursor | Launcher 核心代码、Kiosk 锁定、SystemUI 隐藏 |
-| UI 布局 | Claude（描述需求 → XML） | 主界面、设置页布局 |
-| 调试 | Claude（贴 Logcat） | 崩溃分析、权限问题、厂商兼容性 |
-| 文档 | Claude / Hermes | 技术文档、部署手册 |
-
-### 项目结构（规划）
 ```
-kozen-kiosk-launcher/
-├── app/src/main/java/com/kozen/launcher/
-│   ├── KioskLauncherActivity.kt      # 主界面
-│   ├── KioskDeviceAdminReceiver.kt    # DeviceAdmin
-│   ├── BootReceiver.kt               # 开机自启
-│   ├── kiosk/
-│   │   ├── KioskManager.kt           # LockTask 管理
-│   │   ├── SystemUIHider.kt          # UI 隐藏
-│   │   └── CrashGuard.kt             # 崩溃保护
-│   ├── remote/
-│   │   ├── RemoteConfigManager.kt     # MDM 客户端
-│   │   └── KozenApiService.kt        # API 接口
-│   ├── apps/
-│   │   └── AppListAdapter.kt         # 白名单应用列表
-│   └── utils/
-│       ├── DeviceUtils.kt
-│       └── SecurityUtils.kt
-└── backend/                          # 远程管理后台（后续）
+方案 A：应用级 Kiosk（霸屏 App）
+
+    用户看到的
+    ┌──────────────────┐
+    │   KOZEN 定制界面   │  ← 你写的 App（桌面 + 霸屏）
+    ├──────────────────┤
+    │   原生 SystemUI   │  ← 还在，只是被遮住了
+    │   原生 Settings   │  ← 还在，只是入口藏起来了
+    │   原生 Launcher   │  ← 还在，只是默认桌面换成你的
+    │   Android 框架层   │  ← 完全没动
+    │   Linux Kernel    │
+    └──────────────────┘
+    
+    做法：往系统里装一个 App
+    比喻：给安卓平板套了个壳，把不需要的东西挡住
+
+
+方案 B：ROM 级定制（对标商米 Sunmi OS）
+
+    用户看到的
+    ┌──────────────────┐
+    │   KOZEN 定制界面   │  ← 框架层内置，开机即启动
+    ├──────────────────┤
+    │   KOZEN SystemUI  │  ← 原生 SystemUI 已删除，替换成自己的
+    │   KOZEN Settings  │  ← 原生 Settings 已删除，替换成自己的
+    │   KOZEN 守护服务   │  ← 系统服务级别，App 层杀不死
+    │   Android 框架层   │  ← 改过的（AMS/PMS 注入白名单逻辑）
+    │   Linux Kernel    │  ← 定制过的（SELinux + 安全加固）
+    └──────────────────┘
+    
+    做法：从 Android 源码开始编译，改完烧进设备
+    比喻：把房子的骨架换了，不是贴墙纸，是拆墙重建
 ```
 
-### 关键风险
-- 不同厂商 ROM 对 SystemUI 隐藏的支持不一致（华为/小米/原生 Android）
-- 静默安装需要系统签名或 root 权限（可用 PackageInstaller Session API 替代）
-- DeviceAdmin 可能被用户手动关闭（需要防关闭机制）
+## 核心对比表
+
+```
+┌──────────────┬────────────────────────┬───────────────────────────┐
+│              │   方案 A：Kiosk App     │   方案 B：ROM 定制         │
+├──────────────┼────────────────────────┼───────────────────────────┤
+│ 本质         │ 遮住                       │ 删掉                      │
+├──────────────┼────────────────────────┼───────────────────────────┤
+│ 改动层级      │ 应用层（App）              │ 框架层（SystemUI/Settings） │
+├──────────────┼────────────────────────┼───────────────────────────┤
+│ 开发方式      │ Android Studio 写 App     │ AOSP 源码编译 ROM          │
+├──────────────┼────────────────────────┼───────────────────────────┤
+│ 人力         │ 1 人                      │ 1-2 系统工程师 + AI 辅助    │
+├──────────────┼────────────────────────┼───────────────────────────┤
+│ 工期         │ 2-3 周                    │ 2-3 月                    │
+├──────────────┼────────────────────────┼───────────────────────────┤
+│ 安全性        │ 弱（ADB 可破）            │ 强（不存在的东西破不了）       │
+├──────────────┼────────────────────────┼───────────────────────────┤
+│ 厂商兼容性    │ 各厂商 ROM 行为不一致       │ 自有 ROM，不存在兼容问题      │
+├──────────────┼────────────────────────┼───────────────────────────┤
+│ SDK 稳定性    │ 有风险（隐藏 SystemUI 可能  │ 可控（编译前验证+测试）       │
+│              │  影响打印/通知回调）        │                           │
+├──────────────┼────────────────────────┼───────────────────────────┤
+│ OTA 升级      │ 升级后锁定可能被重置        │ 升级包同步更新，不会丢        │
+├──────────────┼────────────────────────┼───────────────────────────┤
+│ 维护成本      │ 低                       │ 中（Android 大版本升级需适配）│
+├──────────────┼────────────────────────┼───────────────────────────┤
+│ 对标效果      │ 看起来像专用设备            │ 就是专用设备                │
+├──────────────┼────────────────────────┼───────────────────────────┤
+│ 适合场景      │ 小批量、POC、内部测试       │ 大批量出货、跟商米竞争       │
+└──────────────┴────────────────────────┴───────────────────────────┘
+```
+
+## 给 Leader 的一句话总结
+
+> 方案 A（2-3 周）先跑通 POC 看到效果 → 方案 B（2-3 月）做生产级 ROM，对标商米。
+
+---
+
+## 两方案的 AI 工具链
+
+### 工具清单
+
+| 工具 | 方案 A（Kiosk App） | 方案 B（ROM 定制） |
+|------|:---:|:---:|
+| **Claude Opus 4**（架构推理） | ○ 选配 | ● 必用 — 系统层依赖复杂 |
+| **Claude Sonnet 4**（代码生成） | ● 主力 | ● 主力 |
+| **Claude Code CLI**（文件级操作） | ● 必用 | ● 必用 |
+| **Cursor**（源码浏览/理解） | ○ 选配 | ● 推荐 — AOSP 文件太多 |
+| **DeepSeek**（批量/低成本） | ○ 选配 | ○ 选配 |
+| **Android Studio**（编译/调优） | ● 必用 | ● 必用 |
+| **AOSP envsetup + make** | ○ 不需要 | ● 必用 |
+| **adb / logcat** | ● 必用 | ● 必用 |
+
+### 模型使用策略（公司报销 → 效率优先）
+
+```
+Opus —— 用在这种时候：
+  - 分析 SystemServer 启动链、Binder 调用关系
+  - 设计 KozenLauncherService 架构
+  - 理解 SystemUI 内部依赖（几百个类）
+  - 编译报错根因分析（依赖链断裂）
+  - 跨进程通信 AIDL 设计
+
+Sonnet —— 日常主力：
+  - 生成 Java/Kotlin 代码
+  - 写 Android.bp 编译配置
+  - 改 Settings App UI
+  - 写 logcat 日志分析脚本
+
+DeepSeek —— 兜底：
+  - 中文文档生成
+  - 简单重复性代码
+  - API 量大但不需要深度推理的场景
+```
+
+### 实际工作流
+
+```
+你描述需求 → Opus 分析架构 → 确认方案
+                                  ↓
+              Sonnet（Claude Code）生成代码
+                                  ↓
+              系统工程师 Review → 编译 → 烧机
+                                  ↓
+              logcat 报错 → 贴给 Opus 分析
+                                  ↓
+              Sonnet 生成修复 → 重新编译 → 通过
+```
+
+---
+
+## 你这几天要补的知识（按优先级）
+
+### 必看（第 1-2 天）
+
+1. **AOSP 源码结构** — 知道每个目录放什么
+   - `frameworks/base/packages/SystemUI/` — 你要改的核心
+   - `frameworks/base/services/core/` — SystemServer.java 在这里
+   - `packages/apps/Settings/` — 原生设置 App
+   - `device/` 和 `vendor/` — BSP 和硬件相关（了解即可）
+
+2. **Android 启动流程** — 知道开机时发生了什么
+   ```
+   Bootloader → Kernel → init → zygote → system_server
+                                            ├── AMS（Activity管理）
+                                            ├── PMS（包管理）
+                                            ├── SystemUI（状态栏/导航栏）
+                                            └── Launcher（桌面）
+   ```
+   重点：system_server 启动各个服务的顺序，以及 SystemUI 是怎么被拉起的。
+
+3. **SystemUI 核心类** — 知道你要删什么
+   - `StatusBar.java` — 状态栏
+   - `NavigationBarView.java` — 虚拟导航栏
+   - `NotificationPanelView.java` — 通知下拉面板
+   - `KeyguardViewMediator.java` — 锁屏
+
+### 选看（第 3 天）
+
+4. **Android.bp / Android.mk** — AOSP 的编译配置文件语法
+   - 知道怎么让编译系统识别你新增的模块
+   - 知道怎么从编译中排除原生 Settings.apk
+
+5. **AIDL 基础** — Android 进程间通信
+   - 系统服务之间的通信靠 AIDL
+   - 你写 KozenLauncherService 需要定义 AIDL 接口
+
+6. **Binder IPC 原理** — 了解即可，不用深入
+   - 知道是 Android 的核心 IPC 机制
+   - 知道 App → SystemService 的调用走 Binder
+
+### 不需要看的
+
+- Linux Kernel / 驱动 / BSP（系统工程师的事）
+- HAL 层（你们 SDK 已经适配好了）
+- SELinux 策略（最后再补）
+- Android Framework 全部源码（你只需要 SystemUI + SystemServer 周边）
+
+---
+
+## 跟 Leader 汇报的核心要点
+
+1. **两个方案摆出来**，让 leader 选路线，不要自己猜
+2. **把工作量差异说清楚**：Kiosk App = 2-3 周单人 / ROM = 2-3 月团队
+3. **必要条件问清楚**：ROM 方案的前提是能拿到设备 BSP，要跟硬件供应商确认
+4. **你的定位讲明白**：AI 辅助开发，Opus 补 Android 经验短板，代码由系统工程师 Review
+5. **见效节点**：不管哪个方案，先做一个 POC（2-3 周可出），让领导看到东西再决定是否全量投入
