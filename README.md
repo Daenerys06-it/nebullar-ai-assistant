@@ -1,48 +1,41 @@
 # KOZEN AI Assistant
 
-基于 RAG + Agent 的 KOZEN SDK 智能技术支持助手。
+基于 RAG + Agent 的 KOZEN SDK 智能技术支持助手——帮 FAE 从"翻文档"到"问 AI"。
 
 ## 项目结构
 
 ```
 ├── data/
-│   ├── processed/
-│   │   ├── financial_sdk/      # KOZEN Financial SDK 按模块拆分的文档
-│   │   └── terminal_manager_sdk/  # KOZEN Terminal Manager SDK 文档
-│   ├── error_codes.json        # 结构化错误码
-│   └── cases.jsonl             # 真实客户支持案例（持续积累）
+│   ├── error_codes.json    # 结构化错误码（精确查表）
+│   └── cases.jsonl         # FAE 支持案例（持续积累）
+├── DevDocForAIAgent_260507@latest/   # 公司知识库（36个结构化md）
 ├── src/
-│   ├── parse_docs.py           # PDF → Markdown 结构化处理
-│   ├── ingest.py               # 文档切片 + 向量化入库
-│   ├── rag.py                  # 检索层
-│   ├── agent.py                # Agent 核心逻辑
-│   └── app.py                  # Streamlit 前端
-├── chroma_db/                  # 向量数据库（gitignore）
-└── requirements.txt
+│   ├── parse_docs.py       # PDF → Markdown（已弃用）
+│   ├── ingest.py           # 文档切片 + 向量化入库
+│   ├── retrieve.py         # 混合检索（向量+关键词+RRF）
+│   ├── memory.py           # 长期记忆（开发中）
+│   ├── agent.py            # Agent 核心逻辑（开发中）
+│   └── app.py              # Streamlit 前端（开发中）
+└── chroma_db/              # 向量数据库（gitignore）
 ```
 
 ## 快速开始
 
 ```bash
-# 1. 安装依赖
-pip install -r requirements.txt
-
-# 2. 文档向量化入库
-python src/ingest.py
-
-# 3. 启动前端
-streamlit run src/app.py
+pip install -r requirements.txt   # 安装依赖
+python src/ingest.py              # 文档向量化入库（首次下载约420MB嵌入模型）
+streamlit run src/app.py          # 启动前端（开发中）
 ```
 
 ## 技术栈
 
-- **LLM**: Claude API / DeepSeek API
-- **向量数据库**: ChromaDB
-- **嵌入模型**: paraphrase-multilingual-MiniLM-L12-v2（跨语言中英文检索）
+- **LLM**: Claude (Anthropic API)
+- **检索**: ChromaDB（向量）+ rank_bm25（关键词）+ RRF 融合
+- **嵌入模型**: paraphrase-multilingual-MiniLM-L12-v2（跨语言中英文）
 - **前端**: Streamlit
 
-## 数据说明
+## 进度
 
-- `data/processed/`: SDK 文档按模块拆分的 markdown，来源为官方 PDF
-- `data/error_codes.json`: 从文档提取的结构化错误码
-- `data/cases.jsonl`: 日常 FAE 工作中记录的真实支持案例（手动维护）
+- [x] ingest.py — 文档向量化入库（545 chunks）
+- [x] retrieve.py — 混合检索层
+- [ ] memory.py / agent.py / app.py

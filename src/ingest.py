@@ -1,5 +1,6 @@
 """Load markdown docs, split into chunks, embed and store in ChromaDB."""
 
+# 文档切片+向量化（545 chunks 入库 ChromaDB）
 import os
 import glob
 from langchain_text_splitters import (
@@ -7,8 +8,6 @@ from langchain_text_splitters import (
 )  # 智能文本切分器：按段落→句子→空格优先级拆分
 import chromadb  # 轻量向量数据库，存文字向量做相似度检索
 from chromadb.utils import embedding_functions  # 嵌入函数：调用模型把文字转成向量
-
-# 文档切片+向量化（581 chunks 入库 ChromaDB）
 
 # 从当前文件出发 向上跳两级 作为项目的BASE路径
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -53,6 +52,7 @@ def ingest():
     )
     # 遍历数据目录：每个子目录代表一个产品，
     # 每个markdown文件代表一个模块，跳过00_full_document.md（完整文档不切分）
+    # listdir：列出DATA目录下的所有文件和目录，sorted：按字母顺序排序，确保处理顺序一致
     for product_dir in sorted(os.listdir(DATA)):
         # 过滤非目录项：确保只处理目录（产品），跳过文件等其他类型
         # join：拼接路径，构建每个产品目录的完整路径

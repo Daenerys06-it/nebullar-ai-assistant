@@ -1,129 +1,79 @@
-# KOZEN AI Assistant - 项目上下文
+# Nebullar AI Assistant - 项目上下文
 
 ## 项目目标
-构建一个智能 FAE 技术支持 Agent —— 不止是文档问答，而是像一个有经验的同事，能多轮引导排查、记住历史对话、自动沉淀案例。
+部门级智能 FAE 技术支持 Agent（覆盖 KOZEN SDK 及部门通用文档）——不止文档问答，而像有经验的同事：多轮引导排查、记住历史对话、自动沉淀案例。
 
 ## 背景
-- 用户是上海翔诚通信科技有限公司（KOZEN）的 FAE（技术支持工程师）
-- 日常处理 KOZEN Financial SDK V1.8 和 Terminal Manager SDK V1.4 的客户支持问题
-- 研究生方向是 AI 大模型，有 Java 技术栈基础
-- 希望通过这个项目积累"AI + 金融科技"的实战经验，用于求职
+- 用户是上海翔诚通信科技（KOZEN）的 FAE，处理 Financial SDK V1.8 和 Terminal Manager SDK V1.4 客户支持
+- 研究生方向 AI 大模型，有 Java 基础，借项目积累"AI+金融科技"经验用于求职
+- 个人主导开发本部门的 AI Assistant（Nebullar）
+- 边学边写：先讲概念 → 给函数签名 → 用户试写 → 我补修
 
-## 架构设计（2026-05-14 更新）
+## 四层架构
+- **UI** (Streamlit): 聊天面板 / 会话列表 / 案例管理
+- **Agent**: 理解问题 → 检索 → 路由判断（信息够→答案 / 不够→反问）；工具 search_docs / lookup_error / search_cases
+- **Memory**: 短期对话上下文 + 长期 cases.jsonl 沉淀
+- **Retrieval**: ChromaDB 向量 + BM25 关键词 + RRF 融合
 
-### 四层架构
-```
-┌─────────────────────────────────────────┐
-│           Streamlit UI                   │
-│  聊天面板 / 会话列表 / 案例管理 / 知识面板 │
-└──────────────┬──────────────────────────┘
-               │
-┌──────────────▼──────────────────────────┐
-│       LangGraph Agent Runtime            │
-│                                          │
-│  理解问题 → 检索知识 → [路由判断]         │
-│              ├─ 信息足够 → 生成答案       │
-│              └─ 信息不足 → 反问用户       │
-│                                          │
-│  工具: search_docs / lookup_error /       │
-│        search_cases                       │
-│  State: Checkpointer (SQLite) 持久化      │
-└──────────────┬──────────────────────────┘
-               │
-┌──────────────▼──────────────────────────┐
-│           Memory Layer                   │
-│  - 短期: LangGraph Checkpointer          │
-│  - 长期: SQLite + LLM 自动摘要           │
-│  - 用户画像 / 会话历史 / 知识片段         │
-└──────────────┬──────────────────────────┘
-               │
-┌──────────────▼──────────────────────────┐
-│         Retrieval Layer                  │
-│  - 向量检索: ChromaDB (语义匹配)          │
-│  - 关键词: BM25 (精确匹配)               │
-│  - 混合排序: RRF 融合                     │
-└─────────────────────────────────────────┘
-```
+> 注：Agent 框架 LangGraph vs 手写 loop 待定。第一版先手写 loop 跑通再考虑 LangGraph。Memory 层暂不做 LLM 自动摘要等重设计。
 
-### 技术栈
-| 层 | 组件 | 用途 |
-|---|---|---|
-| Agent 编排 | LangGraph | 状态图驱动，复杂分支路由，checkpoint 自动持久化 |
-| 混合检索 | ChromaDB + BM25 | 语义匹配 + 关键词精确匹配，RRF 融合排序 |
-| 长期记忆 | SQLite + LLM 摘要 | 会话结束自动压缩归档，跨会话注入上下文 |
-| LLM | DeepSeek Chat API | Function Calling 兼容 OpenAI 格式 |
-| 嵌入模型 | paraphrase-multilingual-MiniLM-L12-v2 | 跨语言中英文检索 |
-| 前端 | Streamlit | 聊天界面 + 会话管理侧边栏 |
-| 开发方式 | Claude Code + DeepSeek Vibe Coding |
-| 语言 | Python |
+## 技术栈
+| 用途 | 选型 |
+|---|---|
+| LLM | DeepSeek Chat API（Function Calling 兼容 OpenAI 格式） |
+| 检索 | ChromaDB + rank_bm25 + RRF |
+| 嵌入模型 | paraphrase-multilingual-MiniLM-L12-v2（跨语言中英文） |
+| 前端 | Streamlit |
+| 语言 | Python 3.11.9 |
 
-### 核心能力
-- 多轮排查引导（不是一问一答，Agent 主动反问澄清）
-- 跨会话记忆（"你上次那个刷卡问题解决了吗？"）
-- 自动案例归档（解决后 LLM 自动提取知识点存入 cases.jsonl）
-- 混合检索（新人用大白话也能搜到，老手用术语也能精确匹配）
-
-## 公司知识库（AI 部门提供）
-- 目录: `DevDocForAIAgent_260507@latest/`
-- 三个产品线: kozen_component (5) / kozen_financial (19) / kozen_terminal (12) = 36 个 md
-- 格式: YAML frontmatter + 结构化 API 表格 + 关联文档链接
-- 来源: AI 部门用 LLM-Wiki + Obsidian + Hermes 技术栈处理原始 .docx 产出
-- 质量远高于 parse_docs.py 正则产物，将替换为知识库数据源
-
-### 公司技术栈（参考）
-- **LLM-Wiki**: Hermes 技能，LLM 驱动原始文档 → 结构化 wiki md
-- **Obsidian**: 知识管理/可视化，markdown 即数据库，支持图谱浏览
-- **Hermes**: 开源 Agent 框架，三级记忆 + FTS5 检索 + 技能学习循环
-- 核心理念: "编译时"处理（提前结构化），不同于我们的"运行时" RAG
+## 数据源
+- **公司知识库** `DevDocForAIAgent_260507@latest/`：36个结构化md，三产品线（component 5 / financial 19 / terminal 12），YAML frontmatter + API 表格。AI部门用 LLM-Wiki + Obsidian + Hermes 处理 .docx 产出
+- `data/error_codes.json`：结构化错误码（精确查表用，与向量检索互补）
+- `data/cases.jsonl`：FAE 支持案例（持续积累，核心差异化资产）
 
 ## 项目结构
 ```
-kozen-ai-assistant/
-├── data/
-│   ├── processed/
-│   │   ├── financial_sdk/       # parse_docs.py 产出（将被公司知识库替换）
-│   │   └── terminal_manager_sdk/
-│   ├── error_codes.json         # 结构化错误码（100+条）
-│   └── cases.jsonl              # FAE 支持案例（持续积累）
-├── DevDocForAIAgent_260507@latest/  # 公司AI部门知识库（36个md，高质量）
-│   ├── kozen_component/
-│   ├── kozen_financial/
-│   └── kozen_terminal/
-├── src/
-│   ├── parse_docs.py            # PDF → Markdown（已完成，将被替换）
-│   ├── ingest.py                # 文档切片 + 向量化入库（已完成）
-│   ├── retrieve.py              # 混合检索层 ChromaDB + BM25（待开发）
-│   ├── memory.py                # 长期记忆 + 会话管理（待开发）
-│   ├── agent.py                 # LangGraph Agent 核心逻辑（待开发）
-│   └── app.py                   # Streamlit 前端（待开发）
-├── chroma_db/                   # 向量数据库（本地持久化，gitignore）
-└── requirements.txt
+src/
+├── parse_docs.py   # PDF→md（已弃用）
+├── ingest.py       # 切片+向量化入库（已完成，545 chunks）
+├── retrieve.py     # 混合检索 向量+BM25+RRF（已完成）
+├── memory.py       # 长期记忆（待开发）
+├── agent.py        # Agent核心（进行中）
+└── app.py          # Streamlit前端（待开发）
 ```
 
-## Git 仓库
-- GitHub: https://github.com/Daenerys06-it/kozen-ai-assistant
-- 用户名: Daenerys06-it
-- 仓库设为 Private
-
-## 开发策略
-- 阶梯式: retrieve.py → memory.py → agent.py → app.py
-- 每次只写一个函数，跑通再下一个
-- FAE 问题日志持续积累到 cases.jsonl
-
 ## 进度
-- [x] parse_docs.py — PDF转Markdown（后续替换为公司知识库）
-- [x] error_codes.json — Financial SDK错误码结构化（100+条）
-- [x] ingest.py — 文档切片+向量化入库（581 chunks，已跑通）
-- [ ] retrieve.py — 混合检索（ChromaDB + BM25 + RRF）
-- [ ] memory.py — 长期记忆 + 会话管理
-- [ ] agent.py — LangGraph Agent 核心逻辑
-- [ ] app.py — Streamlit 前端
+- [x] ingest.py — 545 chunks 入库 ChromaDB
+- [x] retrieve.py — vector_search / keyword_search / RRF / search 入口
+- [ ] **agent.py（进行中，先做 MVP）**
+- [ ] memory.py → app.py
 
-## 笔记
-- Python 3.11.9 已安装（C:\Program Files\Python311）
-- 用户环境有代理 127.0.0.1:7897，pip install 需加 --proxy
-- 运行时需设置环境变量 http_proxy 和 https_proxy（小写）
-- Python Scripts 路径已加入用户 PATH（含 setx 永久配置）
-- 公司电脑 pdftotext 可用（MinGW 环境）
-- 文档来源：两份官方 PDF，已用 pdftotext 提取文本并按模块拆分
-- 03_cardreader.md 含坏字节 0xAD，已通过编码 fallback 解决
+## Agent MVP（第一版，手写 loop 不用 LangGraph）
+目标：一问一答跑通——`ask("刷卡-70004怎么办")` 返回基于真实文档的中文排查建议。
+
+数据流：用户问题 → search() 检索top5碎片 → 拼prompt → DeepSeek生成 → 返回答案
+
+三个函数：
+- `load_client()` — 从 .env 读 DEEPSEEK_API_KEY，建 OpenAI 兼容客户端
+- `build_prompt(query, docs)` — 拼 [系统角色 + 检索文档 + 用户问题]
+- `ask(query)` — 主流程：检索 → 拼prompt → 调DeepSeek → 返回
+
+prompt 原则：开卷考试，把文档摆给 LLM，文档没有就说"未找到"，禁止编造（防幻觉）。
+
+MVP 刻意不做（留后续）：多轮 / 记忆 / 工具自动选择 / 反问 / LangGraph。
+迭代路线：MVP → 多轮 → 工具调用(search/lookup_error/search_cases) → 反问澄清 →（再考虑 LangGraph 重构）
+
+## 已知待优化
+- keyword_search 每次重建 BM25 索引（性能，agent 阶段优化）
+- BM25 `.split()` 对中文查询无效，靠向量检索互补
+- lookup_error 工具接 error_codes.json 做精确查表（待 agent 阶段）
+
+## Git
+- GitHub: https://github.com/Daenerys06-it/kozen-ai-assistant（Private）
+- 公司电脑与家里电脑通过 GitHub 同步；chroma_db 不入库，clone 后需重跑 ingest.py
+
+## 环境笔记
+- 代理 127.0.0.1:7897；运行需设小写环境变量 http_proxy / https_proxy；pip install 加 --proxy
+- Python Scripts 路径已加入用户 PATH（setx 永久配置）
+- 嵌入模型首次运行下载约 420MB
+- 文档编码兼容：UTF-8 → GBK → UTF-8(errors=replace)，解决坏字节 0xAD
