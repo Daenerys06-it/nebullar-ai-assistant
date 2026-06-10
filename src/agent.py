@@ -64,8 +64,8 @@ def ask(query: str) -> str:
     输入: "刷卡返回错误码-70004是什么意思"
     输出: 中文排查建议（基于真实文档内容）
     """
-    # 1. 检索相关文档片段
-    docs = search(query, top_k=5)
+    # 1. 检索相关文档片段（传 client 启用查询重写，提升口语/模糊问题命中）
+    docs = search(query, top_k=5, client=client)
 
     # 2. 拼接 prompt
     prompt = build_prompt(query, docs)

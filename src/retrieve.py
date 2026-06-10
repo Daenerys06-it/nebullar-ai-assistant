@@ -12,6 +12,41 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_DIR = os.path.join(BASE, "chroma_db")
 
 
+# 查询重写系统提示词：把口语问题改写成检索友好的中英关键词
+REWRITE_SYSTEM_PROMPT = """你是检索词优化助手。把用户的口语问题，改写成适合搜索 KOZEN SDK 英文技术文档的关键词。
+规则：
+1. 输出中文术语 + 对应英文术语 + 可能的API名/错误码
+2. 只输出关键词，用空格分隔，不要解释、不要标点符号
+3. 覆盖同义表达（如"刷卡"→card swipe, card reader, 读卡）"""
+
+
+def rewrite_query(query: str, client) -> str:
+    """用 LLM 把口语问题改写成检索友好的中英关键词。
+
+    输入: "卡碰上去没反应刷不了"
+    输出: 原始问题 + 扩展关键词，例如
+          "卡碰上去没反应刷不了 非接触卡 无响应 contactless card no response checkCard"
+
+    为什么把原始问题也拼上：万一改写跑偏，原问题还在，不丢原意。
+    失败兜底：任何错误都回退到原始 query，不让检索崩。
+    """
+    try:
+        resp = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": REWRITE_SYSTEM_PROMPT},
+                {"role": "user", "content": query},
+            ],
+            temperature=0.1,  # 低温度，改写稳定可复现
+        )
+        rewritten = resp.choices[0].message.content
+        if rewritten and rewritten.strip():
+            return query + " " + rewritten.strip()  # 原问题 + 扩展词
+        return query
+    except Exception:
+        return query  # 网络/API 出错，回退原始 query
+
+
 def vector_search(query: str, top_k: int = 10) -> list[dict]:
     """向量语义检索：把问题在 ChromaDB 里搜最相关的文档片段。
      底层原理
@@ -122,9 +157,15 @@ def reciprocal_rank_fusion(
     return sorted_docs
 
 
-def search(query: str, top_k: int = 5) -> list[dict]:
-    """混合检索统一入口：调 vector_search + keyword_search → RRF 融合 → 返回 top_k。"""
-    v_res = vector_search(query, top_k * 2)           # 多取一些，给 RRF 更大的候选池
-    k_res = keyword_search(query, top_k * 2)
+def search(query: str, top_k: int = 5, client=None) -> list[dict]:
+    """混合检索统一入口：调 vector_search + keyword_search → RRF 融合 → 返回 top_k。
+
+    client 可选：传入 DeepSeek client 则先用 rewrite_query 扩展问题再检索，
+    提升口语/模糊问题（如"黑屏怎么办"）的命中率；不传则用原始 query。
+    """
+    # 传了 client 就先扩展查询（把口语问题加上更多检索线索）
+    search_query = rewrite_query(query, client) if client else query
+    v_res = vector_search(search_query, top_k * 2)    # 多取一些，给 RRF 更大的候选池
+    k_res = keyword_search(search_query, top_k * 2)
     rrf_res = reciprocal_rank_fusion(v_res, k_res)    # 默认 k=60
     return rrf_res[:top_k]
