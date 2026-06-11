@@ -1,32 +1,16 @@
 """Nebullar Agent —— 检索增强问答核心。第一版 MVP：一问一答。"""
-import os
-from dotenv import load_dotenv          # 读取 .env 文件里的密钥
-from openai import OpenAI               # DeepSeek 兼容 OpenAI 格式，用这个库调用
+from llm import load_client, complete   # 提供方抽象：按 .env 选 Opus(公司) 或 DeepSeek(家里)
 
 from retrieve import search             # 混合检索入口：一个问题 → 最相关的文档片段
 
 
-def load_client():
-    """从 .env 读 DeepSeek API key，建立客户端并返回。
-
-    为什么这么写：
-    - key 放 .env（被 gitignore），不写死在代码里，避免提交泄露
-    - DeepSeek 兼容 OpenAI 接口，所以用 OpenAI 类，只需把 base_url 指向 DeepSeek
-    """
-    load_dotenv()                                  # 把 .env 内容加载进环境变量
-    key = os.getenv("DEEPSEEK_API_KEY")            # 取出 key
-    if not key:                                    # 防御：key 没读到就早报错，别等调用时才崩
-        raise RuntimeError("未找到 DEEPSEEK_API_KEY，检查 .env 文件")
-    client = OpenAI(api_key=key, base_url="https://api.deepseek.com")
-    return client
-
-
-# 全局客户端，模块加载时初始化一次（后续多轮对话改传参即可）
-client = load_client()
+# 全局客户端 + 模型，模块加载时按 LLM_PROVIDER 初始化一次
+# 公司电脑 → (Anthropic client, "claude-opus-4-8")；家里电脑 → (OpenAI client, "deepseek-chat")
+client, MODEL = load_client()
 
 # 系统角色提示词 —— 告诉 LLM 它是谁、怎么答
-SYSTEM_PROMPT = """你是 Nebullar，KOZEN 部门的 FAE 技术支持专家。
-你的知识来源于 KOZEN Financial SDK 和 Terminal Manager SDK 的官方文档。
+SYSTEM_PROMPT = """你是 Nebullar 智能助手，Nebullar 部门的 FAE 技术支持专家。
+你的知识来源于 Financial SDK 和 Terminal Manager SDK 的官方文档。
 
 回答规则：
 1. 根据【参考资料】回答问题，资料里有的直接引用
@@ -59,28 +43,19 @@ def build_prompt(query: str, docs: list[dict]) -> str:
 
 
 def ask(query: str) -> str:
-    """RAG 问答主流程：检索 → 拼 prompt → 调 DeepSeek → 返回答案。
+    """RAG 问答主流程：检索 → 拼 prompt → 调 Claude → 返回答案。
 
     输入: "刷卡返回错误码-70004是什么意思"
     输出: 中文排查建议（基于真实文档内容）
     """
-    # 1. 检索相关文档片段（传 client 启用查询重写，提升口语/模糊问题命中）
-    docs = search(query, top_k=5, client=client)
+    # 1. 检索相关文档片段（传 client+model 启用查询重写，提升口语/模糊问题命中）
+    docs = search(query, top_k=5, client=client, model=MODEL)
 
     # 2. 拼接 prompt
     prompt = build_prompt(query, docs)
 
-    # 3. 调 DeepSeek 生成答案
-    resp = client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.3,  # 低温度，减少随机性，让答案更稳定可复现
-    )
-
-    return resp.choices[0].message.content
+    # 3. 调 LLM 生成答案（complete 屏蔽 Opus / DeepSeek 两家 SDK 差异，返回纯文本）
+    return complete(client, MODEL, SYSTEM_PROMPT, prompt, max_tokens=4096)
 
 
 if __name__ == "__main__":

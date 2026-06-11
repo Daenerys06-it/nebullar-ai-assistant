@@ -1,10 +1,10 @@
 # Nebullar AI Assistant - 项目上下文
 
 ## 项目目标
-部门级智能 FAE 技术支持 Agent（覆盖 KOZEN SDK 及部门通用文档）——不止文档问答，而像有经验的同事：多轮引导排查、记住历史对话、自动沉淀案例。
+部门级智能 FAE 技术支持 Agent（覆盖 Nebullar SDK 及部门通用文档）——不止文档问答，而像有经验的同事：多轮引导排查、记住历史对话、自动沉淀案例。
 
 ## 背景
-- 用户是上海翔诚通信科技（KOZEN）的 FAE，处理 Financial SDK V1.8 和 Terminal Manager SDK V1.4 客户支持
+- 用户是上海翔诚通信科技（Nebullar）的 FAE，处理 Financial SDK V1.8 和 Terminal Manager SDK V1.4 客户支持
 - 研究生方向 AI 大模型，有 Java 基础，借项目积累"AI+金融科技"经验用于求职
 - 个人主导开发本部门的 AI Assistant（Nebullar）
 - 边学边写：先讲概念 → 给函数签名 → 用户试写 → 我补修
@@ -20,7 +20,7 @@
 ## 技术栈
 | 用途 | 选型 |
 |---|---|
-| LLM | DeepSeek Chat API（Function Calling 兼容 OpenAI 格式） |
+| LLM | Claude Opus 4.8（公司 Anthropic 兼容网关，model=claude-opus-4-8） |
 | 检索 | ChromaDB + rank_bm25 + RRF |
 | 嵌入模型 | paraphrase-multilingual-MiniLM-L12-v2（跨语言中英文） |
 | 前端 | Streamlit |
@@ -37,8 +37,9 @@ src/
 ├── parse_docs.py   # PDF→md（已弃用）
 ├── ingest.py       # 切片+向量化入库（已完成，545 chunks）
 ├── retrieve.py     # 混合检索 向量+BM25+RRF（已完成）
+├── llm.py          # LLM 提供方抽象 Opus(公司)/DeepSeek(家里)（已完成）
 ├── memory.py       # 长期记忆（待开发）
-├── agent.py        # Agent核心（进行中）
+├── agent.py        # Agent核心（MVP 跑通，可切 provider）
 └── app.py          # Streamlit前端（待开发）
 ```
 
@@ -51,12 +52,12 @@ src/
 ## Agent MVP（第一版，手写 loop 不用 LangGraph）
 目标：一问一答跑通——`ask("刷卡-70004怎么办")` 返回基于真实文档的中文排查建议。
 
-数据流：用户问题 → search() 检索top5碎片 → 拼prompt → DeepSeek生成 → 返回答案
+数据流：用户问题 → search() 检索top5碎片 → 拼prompt → Claude 生成 → 返回答案
 
 三个函数：
-- `load_client()` — 从 .env 读 DEEPSEEK_API_KEY，建 OpenAI 兼容客户端
+- `load_client()` — 从 .env 读网关配置，建 anthropic.Anthropic() 客户端（BASE_URL/AUTH_TOKEN 由 SDK 自动注入）
 - `build_prompt(query, docs)` — 拼 [系统角色 + 检索文档 + 用户问题]
-- `ask(query)` — 主流程：检索 → 拼prompt → 调DeepSeek → 返回
+- `ask(query)` — 主流程：检索 → 拼prompt → 调 Claude → 返回
 
 prompt 原则：开卷考试，把文档摆给 LLM，文档没有就说"未找到"，禁止编造（防幻觉）。
 
@@ -72,8 +73,23 @@ MVP 刻意不做（留后续）：多轮 / 记忆 / 工具自动选择 / 反问 
 - GitHub: https://github.com/Daenerys06-it/kozen-ai-assistant（Private）
 - 公司电脑与家里电脑通过 GitHub 同步；chroma_db 不入库，clone 后需重跑 ingest.py
 
-## 环境笔记
-- 代理 127.0.0.1:7897；运行需设小写环境变量 http_proxy / https_proxy；pip install 加 --proxy
+## 环境笔记（公司电脑 / 家庭电脑 分开）
+
+### 公司电脑（主力，连 Opus 写代码）
+- **LLM 走公司内网 Anthropic 网关**：`ANTHROPIC_BASE_URL=http://10.10.85.155:3000/api`，`model=claude-opus-4-8`；网关 IP 已加入用户级 `NO_PROXY`（`10.10.85.155,localhost,127.0.0.1`）确保直连
+- **pip 直连公网 PyPI，不需要代理**（连公司 wifi 即可上外网，实测 200/0.3s）。早期"pip 加 --proxy 127.0.0.1:7897"是旧/家里环境，公司电脑别用
+- **HuggingFace 必须离线**：公司网络会重置 huggingface.co 连接（10054）。ingest.py / retrieve.py 顶部已 `os.environ.setdefault("HF_HUB_OFFLINE","1")` 走本地缓存
+- **嵌入库锁 <5**：`sentence-transformers 4.1.0` / `transformers 4.57.6` / `huggingface_hub 0.36.2`。5.x 会把纯文本模型 paraphrase-multilingual-MiniLM-L12-v2 当多模态走 AutoProcessor 而崩溃，被环境升级到 5.x 时要重新降级
+
+### 家庭电脑（下班继续开发，只能连 DeepSeek）
+- 网关 `10.10.85.155` 是公司内网，**家里访问不到** → LLM 改用 DeepSeek（`DEEPSEEK_API_KEY`，base_url `https://api.deepseek.com`）
+- ✅ **provider 切换已做好**（src/llm.py）：家里 `.env` 设 `LLM_PROVIDER=deepseek` + `DEEPSEEK_API_KEY` 即用 DeepSeek，公司设 `opus` 即用网关 Opus，代码不用改。两条路都已实测跑通
+- 注意 `.env` 被 gitignore、不随仓库同步：家里 clone 后要照 `.env.example` 新建自己的 `.env`（设 deepseek + key）
+- 首次跑 ingest 若本地无嵌入模型缓存：临时 `set HF_HUB_OFFLINE=0` 让它下载一次（约 420MB），缓存后再恢复离线
+- pip / 模型下载是否需要代理按家里实际网络决定
+
+### 通用
 - Python Scripts 路径已加入用户 PATH（setx 永久配置）
-- 嵌入模型首次运行下载约 420MB
+- 嵌入模型缓存在 `~/.cache/huggingface`，不入库；换机器首次需联网下载约 420MB
 - 文档编码兼容：UTF-8 → GBK → UTF-8(errors=replace)，解决坏字节 0xAD
+- 控制台中文乱码是 Windows GBK 显示问题，`$env:PYTHONUTF8=1` 可消除，不影响逻辑

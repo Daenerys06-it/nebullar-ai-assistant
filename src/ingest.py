@@ -2,6 +2,12 @@
 
 # 文档切片+向量化（545 chunks 入库 ChromaDB）
 import os
+
+# 强制 HuggingFace 离线：嵌入模型已本地缓存，公司网络会重置 huggingface.co 连接（10054）
+# 必须在导入/调用 sentence-transformers 之前设置
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 import glob
 from langchain_text_splitters import (
     RecursiveCharacterTextSplitter,
@@ -30,12 +36,12 @@ def ingest():
     # 每次重建collection避免重复数据
     try:
         # 删除旧collection：如果存在同名collection，先删除它以避免重复数据和ID冲突
-        client.delete_collection("kozen_docs")
+        client.delete_collection("nebullar_docs")
     except Exception:
         pass
     # 创建新collection：指定名称、嵌入函数和元数据配置（使用余弦相似度计算向量距离）
     collection = client.create_collection(
-        name="kozen_docs",
+        name="nebullar_docs",
         embedding_function=embedding_fn,
         metadata={"hnsw:space": "cosine"},
         # 余弦相似度：向量方向越接近越相关

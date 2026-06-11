@@ -104,7 +104,7 @@ if __name__ == "__main__":
         os.path.join(DATA, "raw", "financial_sdk.txt"),
         FIN_SECTIONS,
         os.path.join(DATA, "processed", "financial_sdk"),
-        "KOZEN Financial SDK",
+        "Nebullar Financial SDK",
     )
 
     # 同理，Terminal Manager SDK 切成 10 个 md
@@ -113,7 +113,7 @@ if __name__ == "__main__":
         os.path.join(DATA, "raw", "terminal_manager_sdk.txt"),
         TM_SECTIONS,
         os.path.join(DATA, "processed", "terminal_manager_sdk"),
-        "KOZEN Terminal Manager SDK",
+        "Nebullar Terminal Manager SDK",
     )
 
     print("\nDone!")

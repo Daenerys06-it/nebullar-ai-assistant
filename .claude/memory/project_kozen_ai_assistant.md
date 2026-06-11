@@ -58,3 +58,24 @@ originSessionId: 503bdc81-3792-4c10-af93-e03db3930c46
 - 跨会话记忆（"你上次那个刷卡问题解决了吗？"）
 - 自动案例归档（解决后 LLM 自动提取知识点）
 - 混合检索（新人用大白话也能搜，老手用术语也能精搜）
+
+### 2026-06-10 进展（当前真实状态，以此为准）
+- ingest.py 改用 MarkdownHeaderTextSplitter 按标题切，chunk带[模块|章节]前缀，614 chunks（解决表格被截断）
+- retrieve.py 完成：vector_search/keyword_search/RRF/search + rewrite_query 查询重写（LLM扩展口语→检索词，原问题保底）
+- agent.py MVP 完成：load_client/build_prompt/ask，RAG问答跑通（实测-70004答得专业）
+- 离线模式：ingest/retrieve 顶部加 HF_HUB_OFFLINE，embedding 用本地缓存，**DeepSeek 直连不再需要代理**
+- 最新提交 2c94a15，已同步 GitHub
+- 本次会话踩坑：用户自建 PostToolUse hook 注入测试（inject_test.py 自我恢复），干扰工具输出，已大致清理
+
+### 2026-06-11 ✅ 已切换到公司 Claude 网关 + 项目改名 Nebullar
+- LLM 切换完成：DeepSeek → Claude Opus 4.8（model=claude-opus-4-8），已实测网关连通（usage 正常返回）
+  - .env：ANTHROPIC_BASE_URL=http://10.10.85.155:3000/api，ANTHROPIC_AUTH_TOKEN=cr_...
+  - agent.py / retrieve.py：从 OpenAI 格式(chat.completions) 换成 anthropic SDK(messages.create，system 单独传)；**删掉 temperature**（Opus 4.8 不支持，传了 400）；响应取 `"".join(b.text for b in resp.content if b.type=="text")`
+  - load_client() 改 anthropic.Anthropic()，base_url/auth_token 由 SDK 从环境变量自动注入
+  - requirements.txt 删 openai；未上 adaptive thinking（MVP 保持简单，后续可加 `thinking={"type":"adaptive"}`）
+- **内网网关坑：不要挂代理**。若 shell 里设了 http_proxy/https_proxy（DeepSeek 时代留的），到 10.10.85.155 的请求会绕去 127.0.0.1:7897 失败 → NO_PROXY 加内网 IP，或当前 shell 不设代理（实测裸跑直连 OK）
+- **改名决策（用户拍板）**：项目/代码改 Nebullar，**文档库正文保留 KOZEN**。Why：DevDocForAIAgent 正文含真实 API 类名 KozenFinancialService 等，是客户真在用的符号，乱改会让助手引用不存在的类，破坏 RAG 准确性
+  - 已改：collection 名 kozen_docs → **nebullar_docs**（ingest.py + retrieve.py）；README 标题；CLAUDE.md 技术栈/MVP 的 LLM 说明
+  - 文档文件夹已是 Nebullar_{component,financial,terminal}/，但文件名仍 kozen-*.md、正文仍 KOZEN —— **故意保留**
+  - 嵌套冗余目录 DevDocForAIAgent_260507@latest/DevDocForAIAgent_260507@latest/ 仍在（ingest 已跳过，无害）
+- ⚠️ **collection 改名后必须重跑 `python src/ingest.py` 一次**，否则 retrieve 找不到 nebullar_docs（现有 chroma_db 还是旧的 kozen_docs）

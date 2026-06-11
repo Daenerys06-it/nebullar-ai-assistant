@@ -4,23 +4,30 @@
 # 关键词检索：BM25算法（best matching25)
 # RRF融合排序：将向量检索和关键词检索的结果进行融合排序，综合两者的优势，提高检索效果。
 import os
+
+# 强制 HuggingFace 离线：嵌入模型已本地缓存，公司网络会重置 huggingface.co 连接（10054）
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 import re
 import chromadb
 from rank_bm25 import BM25Okapi  # BM25 关键词检索算法
+
+from llm import complete  # 统一补全入口，屏蔽 Opus / DeepSeek 差异
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_DIR = os.path.join(BASE, "chroma_db")
 
 
 # 查询重写系统提示词：把口语问题改写成检索友好的中英关键词
-REWRITE_SYSTEM_PROMPT = """你是检索词优化助手。把用户的口语问题，改写成适合搜索 KOZEN SDK 英文技术文档的关键词。
+REWRITE_SYSTEM_PROMPT = """你是检索词优化助手。把用户的口语问题，改写成适合搜索 Nebullar SDK 英文技术文档的关键词。
 规则：
 1. 输出中文术语 + 对应英文术语 + 可能的API名/错误码
 2. 只输出关键词，用空格分隔，不要解释、不要标点符号
 3. 覆盖同义表达（如"刷卡"→card swipe, card reader, 读卡）"""
 
 
-def rewrite_query(query: str, client) -> str:
+def rewrite_query(query: str, client, model) -> str:
     """用 LLM 把口语问题改写成检索友好的中英关键词。
 
     输入: "卡碰上去没反应刷不了"
@@ -29,17 +36,12 @@ def rewrite_query(query: str, client) -> str:
 
     为什么把原始问题也拼上：万一改写跑偏，原问题还在，不丢原意。
     失败兜底：任何错误都回退到原始 query，不让检索崩。
+    （client+model 由上层 agent 按 LLM_PROVIDER 传入，Opus / DeepSeek 都能用）
     """
     try:
-        resp = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system", "content": REWRITE_SYSTEM_PROMPT},
-                {"role": "user", "content": query},
-            ],
-            temperature=0.1,  # 低温度，改写稳定可复现
-        )
-        rewritten = resp.choices[0].message.content
+        rewritten = complete(
+            client, model, REWRITE_SYSTEM_PROMPT, query, max_tokens=512
+        )  # 只输出关键词，几百 token 足够
         if rewritten and rewritten.strip():
             return query + " " + rewritten.strip()  # 原问题 + 扩展词
         return query
@@ -58,7 +60,7 @@ def vector_search(query: str, top_k: int = 10) -> list[dict]:
     # PersistentClient：连接持久化客户端
     # get_collection：获取之前创建的 collection，里面存了文档向量和元数据
     client = chromadb.PersistentClient(path=DB_DIR)
-    collection = client.get_collection("kozen_docs")
+    collection = client.get_collection("nebullar_docs")
 
     # collection.query 自动完成：query → 向量 → 余弦相似度计算 → 排序返回
     result = collection.query(query_texts=[query], n_results=top_k)
@@ -85,7 +87,7 @@ def vector_search(query: str, top_k: int = 10) -> list[dict]:
 def keyword_search(query: str, top_k: int = 10) -> list[dict]:
     # 1.连接chromaDB
     client = chromadb.PersistentClient(path=DB_DIR)
-    collection = client.get_collection("kozen_docs")
+    collection = client.get_collection("nebullar_docs")
     all_data = collection.get()  # 取全部
     # collection.get() 返回一个字典，
     # 包含 'documents'（文档内容列表）
@@ -157,14 +159,14 @@ def reciprocal_rank_fusion(
     return sorted_docs
 
 
-def search(query: str, top_k: int = 5, client=None) -> list[dict]:
+def search(query: str, top_k: int = 5, client=None, model=None) -> list[dict]:
     """混合检索统一入口：调 vector_search + keyword_search → RRF 融合 → 返回 top_k。
 
-    client 可选：传入 DeepSeek client 则先用 rewrite_query 扩展问题再检索，
+    client+model 可选：传入则先用 rewrite_query 扩展问题再检索，
     提升口语/模糊问题（如"黑屏怎么办"）的命中率；不传则用原始 query。
     """
-    # 传了 client 就先扩展查询（把口语问题加上更多检索线索）
-    search_query = rewrite_query(query, client) if client else query
+    # 传了 client+model 就先扩展查询（把口语问题加上更多检索线索）
+    search_query = rewrite_query(query, client, model) if client else query
     v_res = vector_search(search_query, top_k * 2)    # 多取一些，给 RRF 更大的候选池
     k_res = keyword_search(search_query, top_k * 2)
     rrf_res = reciprocal_rank_fusion(v_res, k_res)    # 默认 k=60
