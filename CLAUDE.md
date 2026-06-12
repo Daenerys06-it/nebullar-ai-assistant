@@ -49,8 +49,15 @@ src/
 - [x] llm.py — 三路 provider：公司 GPT-5(/openapi) / 公司 Opus(/api) / 家里 DeepSeek
 - [x] agent.py — MVP 跑通：lookup_error 精确查表、RAG 问答、短期多轮上下文、信息不足先反问
 - [x] app.py — Streamlit 聊天前端第一版；`start_app.ps1` 一键启动
+- [x] 环境模板 — `env.company.example` / `env.home.example` 分开，`.env.example` 只做入口说明
 - [ ] memory.py — 长期记忆 / cases.jsonl 案例沉淀
 - [ ] search_cases 工具 / 来源展示 / 小型 eval
+
+## 当前可用效果
+- `刷卡返回 -70004 怎么排查？`：先走 `lookup_error` 精确查表，识别 `-70004 = APDU Error`，再结合真实 SDK 文档生成排查建议
+- `刷卡无反应怎么办`：信息不足时先反问卡类型、读卡方式、当前 API 调用位置，而不是直接堆一串 API
+- Streamlit 前端已能做基础聊天，并把当前会话历史传给 `ask(query, history=...)`
+- provider 已按电脑环境拆开：公司电脑用 GPT-5/Opus，家庭电脑用 DeepSeek；代码层通过 `LLM_PROVIDER` 切换，不改源码
 
 ## Agent MVP（当前版，手写 loop 不用 LangGraph）
 目标：一问一答跑通——`ask("刷卡-70004怎么办")` 返回基于真实文档的中文排查建议。
