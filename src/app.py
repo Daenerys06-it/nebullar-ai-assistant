@@ -11,7 +11,7 @@ Streamlit 心智模型（理解这三点就够写聊天页了）：
 import streamlit as st
 
 from agent import ask, MODEL      # RAG 问答主流程（检索→LLM）+ 当前模型名
-from llm import PROVIDER          # 当前提供方 opus / deepseek（侧栏展示用）
+from llm import PROVIDER          # 当前提供方 gpt5 / opus / deepseek（侧栏展示用）
 
 
 # ---------- 页面基础配置（必须是第一个 st.* 调用）----------
@@ -27,7 +27,7 @@ with st.sidebar:
     if st.button("🗑️ 清空对话", use_container_width=True):
         st.session_state.messages = []     # 清空历史
         st.rerun()                         # 立即重跑，刷新界面
-    st.caption("基于 Financial / Terminal SDK 官方文档开卷作答，未覆盖会如实说明。")
+    st.caption("基于 Financial / Terminal SDK 官方文档开卷作答；信息不足时会先反问澄清。")
 
 
 # ---------- 会话状态：跨「重跑」保存聊天记录 ----------
@@ -47,6 +47,11 @@ for msg in st.session_state.messages:
 # ---------- 底部输入框 + 一轮问答 ----------
 # 海象运算符 := ：用户回车则 query=输入文本并进 if；没输入则返回 None 跳过。
 if query := st.chat_input("问我 SDK 问题，比如：刷卡返回 -70004 怎么排查？"):
+    # 先复制一份“用户本轮输入前”的历史，传给 Agent 用来理解追问。
+    # 例如上一轮答了 powerOnCard，这一轮用户问“那这个 API 调用前要注意什么？”，
+    # Agent 就能从 old_history 里知道“这个 API”指上一轮提到的内容。
+    old_history = st.session_state.messages.copy()
+
     # 1. 先把用户这条显示出来并存进历史
     st.session_state.messages.append({"role": "user", "content": query})
     with st.chat_message("user"):
@@ -56,12 +61,12 @@ if query := st.chat_input("问我 SDK 问题，比如：刷卡返回 -70004 怎�
     with st.chat_message("assistant"):
         with st.spinner("检索文档 + 思考中…"):
             try:
-                answer = ask(query)
+                answer = ask(query, history=old_history)
             except Exception as e:
                 answer = (
                     f"⚠️ 出错了：{e}\n\n"
                     "（公司电脑检查内网网关连通；家里电脑确认 .env 里 "
-                    "`LLM_PROVIDER=deepseek` 且 key 有效）"
+                    "`LLM_PROVIDER` 和 key 有效）"
                 )
         st.markdown(answer)
 

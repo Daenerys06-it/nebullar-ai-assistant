@@ -52,6 +52,39 @@ def build_prompt(query: str, docs: list[dict]) -> str:
 请根据上述参考资料回答用户问题。"""
 
 
+def build_history_context(history: list[dict] | None, max_messages: int = 6) -> str:
+    """把最近几轮聊天历史整理成 prompt 文本。
+
+    history 来自前端 st.session_state.messages，结构是：
+    [
+        {"role": "user", "content": "刷卡返回 -70004 怎么排查？"},
+        {"role": "assistant", "content": "结论：-70004 是 APDU Error..."},
+    ]
+
+    为什么只取最近 max_messages 条：
+    - 多轮对话要让模型知道“这个/它/上面那个 API”指什么
+    - 但历史太长会挤占参考文档空间，所以先保守取最近 6 条
+    """
+    if not history:
+        return ""
+
+    role_names = {
+        "user": "用户",
+        "assistant": "助手",
+    }
+    lines = []
+    for msg in history[-max_messages:]:
+        role = role_names.get(msg.get("role"), msg.get("role", "unknown"))
+        content = str(msg.get("content", "")).strip()
+        if content:
+            lines.append(f"{role}: {content}")
+
+    if not lines:
+        return ""
+
+    return "【最近对话历史（用于理解用户追问里的“这个/它/刚才”等指代）】\n" + "\n".join(lines) + "\n\n"
+
+
 # ──────────────────────────────────────────────────────────────────────
 # ERROR_CODES 长什么样（三层嵌套字典）—— 写 lookup_error 前先看清结构：
 #
@@ -102,18 +135,123 @@ def lookup_error(code: str) -> dict | None:
     return None  # 三层都走完没找到 → 返回啥？
 
 
-def ask(query: str) -> str:
+def analyze_query(query: str, history: list[dict] | None = None) -> dict:
+    """轻量问题分析：判断 intent、抽错误码，并决定是否先反问。
+
+    这一步先不用 LLM，也不上 LangGraph；用规则把最常见的 FAE 排查入口兜住。
+    后续如果规则变复杂，再考虑升级成 LLM router 或 LangGraph 节点。
+    """
+    text = query.lower()
+    history_text = " ".join(str(m.get("content", "")) for m in (history or [])[-6:]).lower()
+    combined = text + " " + history_text
+
+    code_match = re.search(r"-?\d{4,6}", query)
+    error_code = None
+    if code_match:
+        error_code = "-" + code_match.group().lstrip("-")
+
+    card_type_keywords = {
+        "magstripe": ["磁条", "mag", "swipe"],
+        "contact": ["接触", "插卡", "ic card", "contact card"],
+        "contactless": ["非接", "挥卡", "nfc", "contactless", "tap"],
+        "felica": ["felica"],
+    }
+    mentioned_card_types = [
+        card_type
+        for card_type, keywords in card_type_keywords.items()
+        if any(keyword in combined for keyword in keywords)
+    ]
+
+    has_api = bool(re.search(r"\b[a-zA-Z_][a-zA-Z0-9_]{2,}\s*\(", query)) or any(
+        name in combined
+        for name in [
+            "poweroncard",
+            "checkcard",
+            "getcardexiststatus",
+            "transmitapdu",
+            "cardreader",
+        ]
+    )
+
+    troubleshooting_words = [
+        "无反应",
+        "没反应",
+        "失败",
+        "失败了",
+        "刷不了",
+        "读不到",
+        "报错",
+        "怎么办",
+        "怎么排查",
+        "why",
+        "fail",
+        "error",
+        "no response",
+    ]
+    is_troubleshooting = any(word in combined for word in troubleshooting_words)
+
+    intent = "unknown"
+    if error_code:
+        intent = "error_lookup"
+    elif is_troubleshooting:
+        intent = "troubleshooting"
+    elif has_api:
+        intent = "api_usage"
+
+    missing_info = []
+    # 没错误码、没卡类型的“刷卡/读卡无反应”问题，直接回答容易太泛，先追问。
+    card_related = any(word in combined for word in ["刷卡", "读卡", "卡片", "card", "nfc", "apdu"])
+    if intent == "troubleshooting" and card_related and not error_code:
+        if not mentioned_card_types:
+            missing_info.append("card_type")
+        if not has_api:
+            missing_info.append("api_name_or_flow")
+
+    return {
+        "intent": intent,
+        "error_code": error_code,
+        "card_types": mentioned_card_types,
+        "has_api": has_api,
+        "missing_info": missing_info,
+        "should_clarify": bool(missing_info),
+    }
+
+
+def build_clarifying_question(analysis: dict) -> str:
+    """根据缺失信息生成一次性反问，避免信息不足时直接泛泛回答。"""
+    questions = []
+    missing = analysis.get("missing_info", [])
+
+    if "card_type" in missing:
+        questions.append("是哪种卡/读卡方式：磁条卡、接触式 IC、非接 NFC，还是 Felica？")
+    if "api_name_or_flow" in missing:
+        questions.append("你现在调用到哪一步或哪个 API 了？例如 checkCard、powerOnCard、transmitApdu，还是只是业务上说“刷卡无反应”？")
+
+    if not questions:
+        questions.append("能补充一下设备型号、SDK 版本、调用 API 和返回日志吗？")
+
+    return (
+        "这个问题现在信息还不够，我先确认几个关键点，避免直接给一堆泛泛 API：\n\n"
+        + "\n".join(f"{i}. {question}" for i, question in enumerate(questions, 1))
+        + "\n\n你补充后我再按对应卡类型和调用链给排查步骤。"
+    )
+
+
+def ask(query: str, history: list[dict] | None = None) -> str:
     """RAG 问答主流程：检索 → 拼 prompt → 调 Claude → 返回答案。
 
     输入: "刷卡返回错误码-70004是什么意思"
     输出: 中文排查建议（基于真实文档内容）
     """
-    # 0. 先看问题里有没有错误码：有就查官方释义表（精确查表，补向量检索的短板）
-    #    正则 -?\d{4,6}：可选负号 + 4~6 位数字，能匹配 "-70004" 也能匹配 "70004"
+    # 0. 先分析问题：信息明显不足时先反问，而不是直接泛泛回答。
+    analysis = analyze_query(query, history)
+    if analysis["should_clarify"]:
+        return build_clarifying_question(analysis)
+
+    # 1. 看问题里有没有错误码：有就查官方释义表（精确查表，补向量检索的短板）
     error_hint = ""
-    m = re.search(r"-?\d{4,6}", query)
-    if m:
-        code = "-" + m.group().lstrip("-")   # 统一成带负号格式（表里的键都是 "-70004"）
+    if analysis["error_code"]:
+        code = analysis["error_code"]
         hit = lookup_error(code)
         if hit:                              # 查表命中 → 拼一段权威释义，放 prompt 最前面
             error_hint = (
@@ -122,13 +260,17 @@ def ask(query: str) -> str:
                 f"（出处：{hit['sdk']} / {hit['category']}）\n\n"
             )
 
-    # 1. 检索相关文档片段（传 client+model 启用查询重写，提升口语/模糊问题命中）
+    # 2. 检索相关文档片段（传 client+model 启用查询重写，提升口语/模糊问题命中）
     docs = search(query, top_k=5, client=client, model=MODEL)
 
-    # 2. 拼接 prompt（错误码释义放最前面当高优先线索；没命中时是空串，不影响）
-    prompt = error_hint + build_prompt(query, docs)
+    # 3. 拼接 prompt
+    #    - 历史：帮助理解“这个/它/刚才那个 API”等追问
+    #    - 错误码释义：放最前面当高优先线索
+    #    - 参考资料：RAG 检索结果，回答仍以官方文档为准
+    history_context = build_history_context(history)
+    prompt = history_context + error_hint + build_prompt(query, docs)
 
-    # 3. 调 LLM 生成答案（complete 屏蔽 Opus / DeepSeek 两家 SDK 差异，返回纯文本）
+    # 4. 调 LLM 生成答案（complete 屏蔽 GPT-5 / Opus / DeepSeek SDK 差异，返回纯文本）
     return complete(client, MODEL, SYSTEM_PROMPT, prompt, max_tokens=4096)
 
 
