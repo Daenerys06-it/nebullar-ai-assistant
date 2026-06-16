@@ -10,7 +10,7 @@ Streamlit 心智模型（理解这三点就够写聊天页了）：
 """
 import streamlit as st
 
-from agent import ask, MODEL      # RAG 问答主流程（检索→LLM）+ 当前模型名
+from agent import MODEL, ask_structured      # RAG 问答主流程（检索→LLM）+ 当前模型名
 from llm import PROVIDER          # 当前提供方 gpt5 / opus / deepseek（侧栏展示用）
 
 
@@ -37,11 +37,57 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 
+def render_result_details(result: dict | None) -> None:
+    """展示 Agent 用过的工具、命中的案例和参考文档来源。"""
+    if not result:
+        return
+
+    tools = result.get("tools_used") or []
+    error = result.get("error")
+    cases = result.get("cases") or []
+    sources = result.get("sources") or []
+
+    if not tools and not error and not cases and not sources:
+        return
+
+    with st.expander("参考依据 / 工具命中", expanded=False):
+        if tools:
+            st.markdown("**工具**：" + " / ".join(f"`{tool}`" for tool in tools))
+
+        if error:
+            st.markdown("**错误码查表**")
+            st.markdown(
+                f"- `{error.get('code')}` = `{error.get('meaning')}`\n"
+                f"- 来源：`{error.get('sdk')}` / `{error.get('category')}`"
+            )
+
+        if cases:
+            st.markdown("**历史案例**")
+            for case in cases:
+                st.markdown(
+                    f"- `{case.get('module', 'case')}`：{case.get('symptom', '')}\n"
+                    f"  - 原因：{case.get('root_cause', '')}\n"
+                    f"  - 处理：{case.get('solution', '')}"
+                )
+
+        if sources:
+            st.markdown("**参考文档**")
+            for source in sources:
+                title = source.get("module") or "unknown"
+                product = source.get("product") or ""
+                st.markdown(
+                    f"- [{source.get('index')}] `{title}` {product}\n\n"
+                    f"  {source.get('preview', '')}"
+                )
+
+
 # ---------- 渲染已有历史 ----------
 st.title("Nebullar 技术支持")
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+        if msg["role"] == "assistant":
+            render_result_details(msg.get("result"))
 
 
 # ---------- 底部输入框 + 一轮问答 ----------
@@ -61,14 +107,17 @@ if query := st.chat_input("问我 SDK 问题，比如：刷卡返回 -70004 怎�
     with st.chat_message("assistant"):
         with st.spinner("检索文档 + 思考中…"):
             try:
-                answer = ask(query, history=old_history)
+                result = ask_structured(query, history=old_history)
+                answer = result["answer"]
             except Exception as e:
+                result = None
                 answer = (
                     f"⚠️ 出错了：{e}\n\n"
                     "（公司电脑检查内网网关连通；家里电脑确认 .env 里 "
                     "`LLM_PROVIDER` 和 key 有效）"
                 )
         st.markdown(answer)
+        render_result_details(result)
 
     # 3. 答案也存进历史，下次重跑能重现整段对话
-    st.session_state.messages.append({"role": "assistant", "content": answer})
+    st.session_state.messages.append({"role": "assistant", "content": answer, "result": result})

@@ -14,7 +14,7 @@
 │   ├── ingest.py           # 文档切片 + 向量化入库
 │   ├── retrieve.py         # 混合检索（向量+关键词+RRF）
 │   ├── llm.py              # LLM 提供方抽象 GPT-5/Opus(公司)/DeepSeek(家里)
-│   ├── memory.py           # 长期记忆（待开发）
+│   ├── memory.py           # FAE 历史案例检索第一版
 │   ├── agent.py            # Agent 核心逻辑（查表+RAG+短期上下文+澄清反问）
 │   └── app.py              # Streamlit 聊天前端第一版
 └── chroma_db/              # 向量数据库（gitignore）
@@ -99,17 +99,19 @@ python src/agent.py         # 一问一答验证
 - [x] agent.py — MVP 跑通：lookup_error 精确查表、RAG 问答、短期多轮上下文、信息不足先反问
 - [x] app.py — Streamlit 聊天前端第一版，支持把历史消息传给 Agent
 - [x] 环境模板 — `env.company.example` / `env.home.example` 分开，避免公司电脑和家庭电脑配置混乱
-- [ ] memory.py — 长期记忆 / cases.jsonl 案例沉淀
-- [ ] search_cases 工具 / 来源展示 / 小型 eval
+- [x] memory.py / search_cases 第一版 — 从 `data/cases.jsonl` 检索 FAE 历史案例并放入 Agent prompt
+- [x] 结构化回答 / 来源展示第一版 — 前端展示 tools_used、错误码查表、历史案例、参考文档
+- [x] 小型 eval 第一版 — 固定错误码、澄清反问、历史案例、结构化来源四类回归测试
 
 ## 当前效果
 
 - 问 `刷卡返回 -70004 怎么排查？`：Agent 会先查 `data/error_codes.json`，识别 `-70004 = APDU Error`，再结合检索到的真实 SDK 文档生成排查建议。
 - 问 `刷卡无反应怎么办` 这种信息不足的问题：Agent 不直接堆 API，会先反问卡类型、读卡方式、当前调用到的 API 等关键上下文。
+- 问 `adb 查不到设备怎么办` 这类现场问题：Agent 会命中历史案例，优先提示检查开发者模式和 USB debugging。
+- 前端回答下方可展开查看：命中的工具、错误码释义、历史案例和参考文档来源。
 - 前端当前是会话内短期上下文，刷新或重启后不保存；长期记忆和案例沉淀放到后续 `memory.py`。
 
 ## 下一步
 
-- 把 `ask()` 的返回改成结构化结果：`answer` / `sources` / `tools_used`，方便前端展示引用来源。
-- 开发 `search_cases`，让 Agent 能查历史 FAE 案例，而不只查 SDK 文档。
-- 做一组小型 eval：错误码、API、口语排查、资料不足四类用例，防止后续改代码把效果改坏。
+- 继续扩充 `data/cases.jsonl`，把常见现场排查沉淀成可检索案例。
+- 继续增强 eval：加入真实检索链路、API 问答、资料不足等用例。

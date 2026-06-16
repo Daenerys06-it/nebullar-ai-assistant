@@ -50,13 +50,16 @@ src/
 - [x] agent.py — MVP 跑通：lookup_error 精确查表、RAG 问答、短期多轮上下文、信息不足先反问
 - [x] app.py — Streamlit 聊天前端第一版；`start_app.ps1` 一键启动
 - [x] 环境模板 — `env.company.example` / `env.home.example` 分开，`.env.example` 只做入口说明
-- [ ] memory.py — 长期记忆 / cases.jsonl 案例沉淀
-- [ ] search_cases 工具 / 来源展示 / 小型 eval
+- [x] memory.py / search_cases 第一版 — 从 `data/cases.jsonl` 检索 FAE 历史案例并放入 Agent prompt
+- [x] 结构化回答 / 来源展示第一版 — 前端展示 tools_used、错误码查表、历史案例、参考文档
+- [x] 小型 eval 第一版 — 固定错误码、澄清反问、历史案例、结构化来源四类回归测试
 
 ## 当前可用效果
 - `刷卡返回 -70004 怎么排查？`：先走 `lookup_error` 精确查表，识别 `-70004 = APDU Error`，再结合真实 SDK 文档生成排查建议
 - `刷卡无反应怎么办`：信息不足时先反问卡类型、读卡方式、当前 API 调用位置，而不是直接堆一串 API
+- `adb 查不到设备怎么办`：命中历史支持案例，优先提示检查开发者模式和 USB debugging
 - Streamlit 前端已能做基础聊天，并把当前会话历史传给 `ask(query, history=...)`
+- 前端回答下方可展开查看：命中的工具、错误码释义、历史案例和参考文档来源
 - provider 已按电脑环境拆开：公司电脑用 GPT-5/Opus，家庭电脑用 DeepSeek；代码层通过 `LLM_PROVIDER` 切换，不改源码
 
 ## Agent MVP（当前版，手写 loop 不用 LangGraph）

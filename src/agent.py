@@ -1,4 +1,4 @@
-"""Nebullar Agent —— 检索增强问答核心。第一版 MVP：一问一答。"""
+"""Nebullar Agent —— 检索增强问答核心。"""
 
 import os
 import json
@@ -8,6 +8,7 @@ from llm import (
     load_client,
     complete,
 )  # 提供方抽象：按 .env 选 Opus(公司) 或 DeepSeek(家里)
+from memory import build_cases_context, search_cases
 from retrieve import search  # 混合检索入口：一个问题 → 最相关的文档片段
 
 # 【第1步：照抄】错误码精确查表数据：模块加载时读一次（别每次查都重读文件）
@@ -26,9 +27,10 @@ SYSTEM_PROMPT = """你是 Nebullar 智能助手，Nebullar 部门的 FAE 技术�
 
 回答规则：
 1. 根据【参考资料】回答问题，资料里有的直接引用
-2. 资料不足时，诚实说"当前知识库未覆盖该问题"，不要编造
-3. 回答用中文，结构清晰：先给结论，再给排查步骤，最后给相关 API
-4. 涉及错误码时，给出错误码含义、常见原因、建议解决方案
+2. 【历史支持案例】是 FAE 经验沉淀，适合处理操作类/环境类问题；案例命中时先抓住案例里的关键原因和操作步骤
+3. 资料不足时，诚实说"当前知识库未覆盖该问题"，不要编造
+4. 回答用中文，结构清晰：先给结论，再给排查步骤，最后给相关 API
+5. 涉及错误码时，给出错误码含义、常见原因、建议解决方案
 """
 
 
@@ -237,41 +239,98 @@ def build_clarifying_question(analysis: dict) -> str:
     )
 
 
-def ask(query: str, history: list[dict] | None = None) -> str:
-    """RAG 问答主流程：检索 → 拼 prompt → 调 Claude → 返回答案。
+def _format_doc_source(doc: dict, index: int) -> dict:
+    """把 retrieve.search() 的文档片段整理成前端可展示的来源。"""
+    content = str(doc.get("content", "")).strip()
+    return {
+        "index": index,
+        "module": doc.get("module", ""),
+        "product": doc.get("product", ""),
+        "score": doc.get("rrf_score", doc.get("score", "")),
+        "preview": content[:300] + ("..." if len(content) > 300 else ""),
+    }
+
+
+def ask_structured(query: str, history: list[dict] | None = None) -> dict:
+    """RAG 问答主流程，返回结构化结果。
 
     输入: "刷卡返回错误码-70004是什么意思"
-    输出: 中文排查建议（基于真实文档内容）
+    输出:
+    {
+        "answer": "中文排查建议",
+        "tools_used": ["lookup_error", "search_cases", "search_docs"],
+        "error": {...} | None,
+        "cases": [...],
+        "sources": [...],
+    }
     """
     # 0. 先分析问题：信息明显不足时先反问，而不是直接泛泛回答。
     analysis = analyze_query(query, history)
     if analysis["should_clarify"]:
-        return build_clarifying_question(analysis)
+        return {
+            "answer": build_clarifying_question(analysis),
+            "tools_used": ["analyze_query"],
+            "error": None,
+            "cases": [],
+            "sources": [],
+            "analysis": analysis,
+            "provider_model": MODEL,
+            "needs_clarification": True,
+        }
 
     # 1. 看问题里有没有错误码：有就查官方释义表（精确查表，补向量检索的短板）
     error_hint = ""
+    error_hit = None
+    tools_used = []
     if analysis["error_code"]:
         code = analysis["error_code"]
         hit = lookup_error(code)
+        tools_used.append("lookup_error")
         if hit:                              # 查表命中 → 拼一段权威释义，放 prompt 最前面
+            error_hit = hit
             error_hint = (
                 "【错误码官方释义（来自结构化错误码表，权威，请优先采信）】\n"
                 f"{hit['code']} = {hit['meaning']}"
                 f"（出处：{hit['sdk']} / {hit['category']}）\n\n"
             )
 
-    # 2. 检索相关文档片段（传 client+model 启用查询重写，提升口语/模糊问题命中）
-    docs = search(query, top_k=5, client=client, model=MODEL)
+    # 2. 检索历史支持案例。案例用于补充 SDK 文档里没有写清楚的现场经验。
+    cases = search_cases(query, top_k=3)
+    cases_context = build_cases_context(cases)
+    if cases:
+        tools_used.append("search_cases")
 
-    # 3. 拼接 prompt
+    # 3. 检索相关文档片段（传 client+model 启用查询重写，提升口语/模糊问题命中）
+    docs = search(query, top_k=5, client=client, model=MODEL)
+    if docs:
+        tools_used.append("search_docs")
+
+    # 4. 拼接 prompt
     #    - 历史：帮助理解“这个/它/刚才那个 API”等追问
     #    - 错误码释义：放最前面当高优先线索
+    #    - 历史案例：补充 FAE 现场经验
     #    - 参考资料：RAG 检索结果，回答仍以官方文档为准
     history_context = build_history_context(history)
-    prompt = history_context + error_hint + build_prompt(query, docs)
+    prompt = history_context + error_hint + cases_context + build_prompt(query, docs)
 
-    # 4. 调 LLM 生成答案（complete 屏蔽 GPT-5 / Opus / DeepSeek SDK 差异，返回纯文本）
-    return complete(client, MODEL, SYSTEM_PROMPT, prompt, max_tokens=4096)
+    # 5. 调 LLM 生成答案（complete 屏蔽 GPT-5 / Opus / DeepSeek SDK 差异，返回纯文本）
+    answer = complete(client, MODEL, SYSTEM_PROMPT, prompt, max_tokens=4096)
+
+    return {
+        "answer": answer,
+        "tools_used": tools_used,
+        "error": error_hit,
+        "cases": cases,
+        "sources": [_format_doc_source(doc, i) for i, doc in enumerate(docs, 1)],
+        "analysis": analysis,
+        "provider_model": MODEL,
+        "needs_clarification": False,
+    }
+
+
+def ask(query: str, history: list[dict] | None = None) -> str:
+    """兼容旧调用：只返回答案文本。"""
+    return ask_structured(query, history=history)["answer"]
 
 
 if __name__ == "__main__":
@@ -282,5 +341,6 @@ if __name__ == "__main__":
 
     q = "刷卡返回错误码-70004是什么意思，怎么排查？"
     print(f"\n问题: {q}\n")
-    answer = ask(q)
-    print(f"回答:\n{answer}")
+    result = ask_structured(q)
+    print(f"回答:\n{result['answer']}")
+    print(f"\n工具: {', '.join(result['tools_used'])}")
