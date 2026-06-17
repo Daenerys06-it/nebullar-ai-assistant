@@ -2,7 +2,10 @@
 
 import os
 import json
-import re                                   # 正则：从问题文字里抠出错误码
+import re  # 正则：从问题文字里抠出错误码
+from typing import TypedDict, Optional  # State 的类型声明
+
+from langgraph.graph import StateGraph, END  # LangGraph：把问答流程声明成"图"
 
 from llm import (
     load_client,
@@ -84,7 +87,11 @@ def build_history_context(history: list[dict] | None, max_messages: int = 6) -> 
     if not lines:
         return ""
 
-    return "【最近对话历史（用于理解用户追问里的“这个/它/刚才”等指代）】\n" + "\n".join(lines) + "\n\n"
+    return (
+        "【最近对话历史（用于理解用户追问里的“这个/它/刚才”等指代）】\n"
+        + "\n".join(lines)
+        + "\n\n"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -144,7 +151,9 @@ def analyze_query(query: str, history: list[dict] | None = None) -> dict:
     后续如果规则变复杂，再考虑升级成 LLM router 或 LangGraph 节点。
     """
     text = query.lower()
-    history_text = " ".join(str(m.get("content", "")) for m in (history or [])[-6:]).lower()
+    history_text = " ".join(
+        str(m.get("content", "")) for m in (history or [])[-6:]
+    ).lower()
     combined = text + " " + history_text
 
     code_match = re.search(r"-?\d{4,6}", query)
@@ -202,7 +211,9 @@ def analyze_query(query: str, history: list[dict] | None = None) -> dict:
 
     missing_info = []
     # 没错误码、没卡类型的“刷卡/读卡无反应”问题，直接回答容易太泛，先追问。
-    card_related = any(word in combined for word in ["刷卡", "读卡", "卡片", "card", "nfc", "apdu"])
+    card_related = any(
+        word in combined for word in ["刷卡", "读卡", "卡片", "card", "nfc", "apdu"]
+    )
     if intent == "troubleshooting" and card_related and not error_code:
         if not mentioned_card_types:
             missing_info.append("card_type")
@@ -225,9 +236,13 @@ def build_clarifying_question(analysis: dict) -> str:
     missing = analysis.get("missing_info", [])
 
     if "card_type" in missing:
-        questions.append("是哪种卡/读卡方式：磁条卡、接触式 IC、非接 NFC，还是 Felica？")
+        questions.append(
+            "是哪种卡/读卡方式：磁条卡、接触式 IC、非接 NFC，还是 Felica？"
+        )
     if "api_name_or_flow" in missing:
-        questions.append("你现在调用到哪一步或哪个 API 了？例如 checkCard、powerOnCard、transmitApdu，还是只是业务上说“刷卡无反应”？")
+        questions.append(
+            "你现在调用到哪一步或哪个 API 了？例如 checkCard、powerOnCard、transmitApdu，还是只是业务上说“刷卡无反应”？"
+        )
 
     if not questions:
         questions.append("能补充一下设备型号、SDK 版本、调用 API 和返回日志吗？")
@@ -251,80 +266,157 @@ def _format_doc_source(doc: dict, index: int) -> dict:
     }
 
 
-def ask_structured(query: str, history: list[dict] | None = None) -> dict:
-    """RAG 问答主流程，返回结构化结果。
+# ══════════════════════════════════════════════════════════════════════
+# LangGraph 版问答流程（等价迁移：行为和原 ask_structured 完全一样）
+#
+#   · State：贯穿全程的字典 AgentState，每个节点往里写自己的产出。
+#   · Node ：函数 (state) -> 只含"我改了哪些字段"的小字典，LangGraph 自动合并。
+# ══════════════════════════════════════════════════════════════════════
 
-    输入: "刷卡返回错误码-70004是什么意思"
-    输出:
-    {
-        "answer": "中文排查建议",
-        "tools_used": ["lookup_error", "search_cases", "search_docs"],
-        "error": {...} | None,
-        "cases": [...],
-        "sources": [...],
+
+class AgentState(TypedDict):
+    """在节点间传递的"接力棒"。每个字段由某个节点负责填。"""
+
+    query: str  # 用户问题（入口给）
+    history: list  # 多轮历史（入口给）
+    analysis: dict  # analyze 节点产出
+    error_hint: str  # lookup_error 节点产出：拼进 prompt 的错误码释义
+    error_hit: Optional[dict]  # lookup_error 节点产出：命中的错误码信息（给前端）
+    cases: list  # retrieve 节点产出：命中的案例
+    docs: list  # retrieve 节点产出：检索到的文档片段
+    tools_used: list  # 各节点累加：用过哪些工具
+    answer: str  # generate / clarify 节点产出：最终答案
+    needs_clarification: bool  # analyze 节点产出：是否要先反问
+
+
+# ---------- 节点们（每个都是 state -> 要更新的字段dict）----------
+
+
+def analyze_node(state: AgentState) -> dict:
+    """【模板·已写】分析问题，决定是否要反问。"""
+    analysis = analyze_query(state["query"], state["history"])
+    return {
+        "analysis": analysis,
+        "tools_used": ["analyze_query"],  # 第一个节点，给 tools_used 起个头
+        "needs_clarification": analysis["should_clarify"],
     }
+
+
+def clarify_node(state: AgentState) -> dict:
+    """【模板·已写】信息不足 → 生成一次性反问，流程到此结束。"""
+    return {"answer": build_clarifying_question(state["analysis"])}
+
+
+def lookup_error_node(state: AgentState) -> dict:
+    """【★你来填★】有错误码就查表，命中则拼一段权威释义 error_hint。
+
+    你能用的：
+      - state["analysis"]["error_code"]  → "-70004" 或 None
+      - state["tools_used"]              → 目前用过的工具列表（命中时要在末尾加 "lookup_error"）
+      - lookup_error(code)               → 命中返回 {code,meaning,sdk,category}，否则 None
+    要返回的 dict（三个字段）：
+      {"error_hit": 命中信息或None, "error_hint": 释义文本或"", "tools_used": 更新后的列表}
+
+    提示：逻辑跟原 ask_structured 第 1 步一模一样。没错误码时 error_hit=None、error_hint=""，
+    tools_used 原样返回。注意别用 .append（那是原地改），改用 列表 + ["lookup_error"] 拼新列表。
     """
-    # 0. 先分析问题：信息明显不足时先反问，而不是直接泛泛回答。
-    analysis = analyze_query(query, history)
-    if analysis["should_clarify"]:
-        return {
-            "answer": build_clarifying_question(analysis),
-            "tools_used": ["analyze_query"],
-            "error": None,
-            "cases": [],
-            "sources": [],
-            "analysis": analysis,
-            "provider_model": MODEL,
-            "needs_clarification": True,
-        }
+    raise NotImplementedError("lookup_error_node 待填")
 
-    # 1. 看问题里有没有错误码：有就查官方释义表（精确查表，补向量检索的短板）
-    error_hint = ""
-    error_hit = None
-    tools_used = []
-    if analysis["error_code"]:
-        code = analysis["error_code"]
-        hit = lookup_error(code)
-        tools_used.append("lookup_error")
-        if hit:                              # 查表命中 → 拼一段权威释义，放 prompt 最前面
-            error_hit = hit
-            error_hint = (
-                "【错误码官方释义（来自结构化错误码表，权威，请优先采信）】\n"
-                f"{hit['code']} = {hit['meaning']}"
-                f"（出处：{hit['sdk']} / {hit['category']}）\n\n"
-            )
 
-    # 2. 检索历史支持案例。案例用于补充 SDK 文档里没有写清楚的现场经验。
+def retrieve_node(state: AgentState) -> dict:
+    """【模板·已写】检索历史案例 + 文档片段。"""
+    query = state["query"]
+    tools = state["tools_used"]
+
     cases = search_cases(query, top_k=3)
-    cases_context = build_cases_context(cases)
     if cases:
-        tools_used.append("search_cases")
+        tools = tools + ["search_cases"]  # 拼新列表，别原地 append
 
-    # 3. 检索相关文档片段（传 client+model 启用查询重写，提升口语/模糊问题命中）
     docs = search(query, top_k=5, client=client, model=MODEL)
     if docs:
-        tools_used.append("search_docs")
+        tools = tools + ["search_docs"]
 
-    # 4. 拼接 prompt
-    #    - 历史：帮助理解“这个/它/刚才那个 API”等追问
-    #    - 错误码释义：放最前面当高优先线索
-    #    - 历史案例：补充 FAE 现场经验
-    #    - 参考资料：RAG 检索结果，回答仍以官方文档为准
-    history_context = build_history_context(history)
-    prompt = history_context + error_hint + cases_context + build_prompt(query, docs)
+    return {"cases": cases, "docs": docs, "tools_used": tools}
 
-    # 5. 调 LLM 生成答案（complete 屏蔽 GPT-5 / Opus / DeepSeek SDK 差异，返回纯文本）
+
+def generate_node(state: AgentState) -> dict:
+    """【模板·已写】拼 prompt（历史 + 错误码释义 + 案例 + 文档）→ 调 LLM。"""
+    history_context = build_history_context(state["history"])
+    cases_context = build_cases_context(state["cases"])
+    prompt = (
+        history_context
+        + state["error_hint"]
+        + cases_context
+        + build_prompt(state["query"], state["docs"])
+    )
     answer = complete(client, MODEL, SYSTEM_PROMPT, prompt, max_tokens=4096)
+    return {"answer": answer}
+
+
+def route_after_analyze(state: AgentState) -> str:
+    """【★你来填★】条件边：analyze 之后该去哪个节点？
+
+    规则：
+      - state["needs_clarification"] 为真 → 返回 "clarify"
+      - 否则                              → 返回 "lookup_error"
+    返回的字符串必须是下面 add_conditional_edges 映射表里的某个 key。
+    """
+    raise NotImplementedError("route_after_analyze 待填")
+
+
+# ---------- 把节点和边连成图，编译成可运行对象（模块加载时一次）----------
+_graph = StateGraph(AgentState)
+_graph.add_node("analyze", analyze_node)
+_graph.add_node("clarify", clarify_node)
+_graph.add_node("lookup_error", lookup_error_node)
+_graph.add_node("retrieve", retrieve_node)
+_graph.add_node("generate", generate_node)
+
+_graph.set_entry_point("analyze")
+_graph.add_conditional_edges(  # analyze 后，按 route_after_analyze 的返回值分叉
+    "analyze",
+    route_after_analyze,
+    {"clarify": "clarify", "lookup_error": "lookup_error"},
+)
+_graph.add_edge("clarify", END)  # 反问完直接结束
+_graph.add_edge("lookup_error", "retrieve")
+_graph.add_edge("retrieve", "generate")
+_graph.add_edge("generate", END)
+
+APP_GRAPH = _graph.compile()
+
+
+def ask_structured(query: str, history: list[dict] | None = None) -> dict:
+    """RAG 问答主流程（LangGraph 版）：组装初始 state → 跑图 → 整理成结构化结果。
+
+    输出契约与原来完全一致（answer/tools_used/error/cases/sources/...），
+    所以 app.py 和测试都不用改。
+    """
+    init_state: AgentState = {
+        "query": query,
+        "history": history or [],
+        "analysis": {},
+        "error_hint": "",
+        "error_hit": None,
+        "cases": [],
+        "docs": [],
+        "tools_used": [],
+        "answer": "",
+        "needs_clarification": False,
+    }
+    final = APP_GRAPH.invoke(init_state)
 
     return {
-        "answer": answer,
-        "tools_used": tools_used,
-        "error": error_hit,
-        "cases": cases,
-        "sources": [_format_doc_source(doc, i) for i, doc in enumerate(docs, 1)],
-        "analysis": analysis,
+        "answer": final["answer"],
+        "tools_used": final["tools_used"],
+        "error": final["error_hit"],
+        "cases": final["cases"],
+        "sources": [
+            _format_doc_source(doc, i) for i, doc in enumerate(final["docs"], 1)
+        ],
+        "analysis": final["analysis"],
         "provider_model": MODEL,
-        "needs_clarification": False,
+        "needs_clarification": final["needs_clarification"],
     }
 
 
