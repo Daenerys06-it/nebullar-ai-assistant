@@ -10,7 +10,7 @@ Streamlit 心智模型（理解这三点就够写聊天页了）：
 """
 import streamlit as st
 
-from agent import MODEL, ask_structured      # RAG 问答主流程（检索→LLM）+ 当前模型名
+from agent import MODEL, ask_structured_stream  # RAG 问答主流程（流式，逐节点出进度）+ 当前模型名
 from llm import PROVIDER          # 当前提供方 gpt5 / opus / deepseek（侧栏展示用）
 
 
@@ -103,19 +103,25 @@ if query := st.chat_input("问我 SDK 问题，比如：刷卡返回 -70004 怎�
     with st.chat_message("user"):
         st.markdown(query)
 
-    # 2. 调 Agent 生成答案（转圈等待；出错也不让页面崩）
+    # 2. 调 Agent 生成答案（节点级流式进度；出错也不让页面崩）
     with st.chat_message("assistant"):
-        with st.spinner("检索文档 + 思考中…"):
-            try:
-                result = ask_structured(query, history=old_history)
-                answer = result["answer"]
-            except Exception as e:
-                result = None
-                answer = (
-                    f"⚠️ 出错了：{e}\n\n"
-                    "（公司电脑检查内网网关连通；家里电脑确认 .env 里 "
-                    "`LLM_PROVIDER` 和 key 有效）"
-                )
+        result = None
+        try:
+            with st.status("处理中…", expanded=False) as status:
+                for kind, payload in ask_structured_stream(query, history=old_history):
+                    if kind == "progress":
+                        status.update(label=payload)  # 每过一个节点，更新进度文案
+                    else:  # ("done", 结构化结果)
+                        result = payload
+                status.update(label="完成 ✅", state="complete")
+            answer = result["answer"]
+        except Exception as e:
+            result = None
+            answer = (
+                f"⚠️ 出错了：{e}\n\n"
+                "（公司电脑检查内网网关连通；家里电脑确认 .env 里 "
+                "`LLM_PROVIDER` 和 key 有效）"
+            )
         st.markdown(answer)
         render_result_details(result)
 

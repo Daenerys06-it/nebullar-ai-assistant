@@ -287,6 +287,8 @@ class AgentState(TypedDict):
     tools_used: list  # 各节点累加：用过哪些工具
     answer: str  # generate / clarify 节点产出：最终答案
     needs_clarification: bool  # analyze 节点产出：是否要先反问
+    retrieval_query: str  # refine 节点产出：纠错回路时用的"加宽版"检索词
+    retries: int  # 自我纠错已重试次数（防死循环）
 
 
 # ---------- 节点们（每个都是 state -> 要更新的字段dict）----------
@@ -320,20 +322,40 @@ def lookup_error_node(state: AgentState) -> dict:
     提示：逻辑跟原 ask_structured 第 1 步一模一样。没错误码时 error_hit=None、error_hint=""，
     tools_used 原样返回。注意别用 .append（那是原地改），改用 列表 + ["lookup_error"] 拼新列表。
     """
-    raise NotImplementedError("lookup_error_node 待填")
+    code = state["analysis"]["error_code"]
+    tools = state["tools_used"]
+
+    if not code:                          # 路径①没错误码：三个字段原样返回
+        return {"error_hit": None, "error_hint": "", "tools_used": tools}
+
+    # 有错误码就算"用了查表工具"（无论命中与否，和原 ask_structured 一致）
+    tools = tools + ["lookup_error"]
+    hit = lookup_error(code)
+    if not hit:                           # 路径②有码但表里查不到：没释义，但也要正常返回
+        return {"error_hit": None, "error_hint": "", "tools_used": tools}
+
+    # 路径③命中：拼一段权威释义，放进 prompt 最前面，引导 LLM 优先采信
+    error_hint = (
+        "【错误码官方释义（来自结构化错误码表，权威，请优先采信）】\n"
+        f"{hit['code']} = {hit['meaning']}（出处：{hit['sdk']} / {hit['category']}）\n\n"
+    )
+    return {"error_hit": hit, "error_hint": error_hint, "tools_used": tools}
 
 
 def retrieve_node(state: AgentState) -> dict:
-    """【模板·已写】检索历史案例 + 文档片段。"""
-    query = state["query"]
+    """【模板·已写】检索历史案例 + 文档片段。
+
+    纠错回路里会被跑第二次：这时改用 refine 节点加宽后的 retrieval_query。
+    """
+    query = state.get("retrieval_query") or state["query"]  # 回路时用加宽版检索词
     tools = state["tools_used"]
 
     cases = search_cases(query, top_k=3)
-    if cases:
-        tools = tools + ["search_cases"]  # 拼新列表，别原地 append
+    if cases and "search_cases" not in tools:  # 回路重跑时别重复记工具
+        tools = tools + ["search_cases"]
 
     docs = search(query, top_k=5, client=client, model=MODEL)
-    if docs:
+    if docs and "search_docs" not in tools:
         tools = tools + ["search_docs"]
 
     return {"cases": cases, "docs": docs, "tools_used": tools}
@@ -353,6 +375,29 @@ def generate_node(state: AgentState) -> dict:
     return {"answer": answer}
 
 
+# 自我纠错回路：答案明显不足时，换更宽的检索词回 retrieve 再答一轮（最多 MAX_RETRIES 次）
+MAX_RETRIES = 1
+
+
+def route_after_generate(state: AgentState) -> str:
+    """条件边：答案够好就结束；说"未覆盖/无法回答"且还没重试过 → 去 refine 再来一轮。"""
+    answer = state["answer"]
+    looks_weak = ("未覆盖" in answer) or ("无法回答" in answer)
+    if looks_weak and state["retries"] < MAX_RETRIES:
+        return "refine"
+    return "end"
+
+
+def refine_node(state: AgentState) -> dict:
+    """加宽检索词后回到 retrieve：把错误码官方释义 + 通用排查词拼进去，给检索更多线索。"""
+    extra = []
+    if state["error_hit"]:
+        extra.append(state["error_hit"]["meaning"])  # 用官方释义当补充检索词
+    extra += ["排查", "原因", "步骤", "troubleshoot", "cause"]
+    refined = state["query"] + " " + " ".join(extra)
+    return {"retries": state["retries"] + 1, "retrieval_query": refined}
+
+
 def route_after_analyze(state: AgentState) -> str:
     """【★你来填★】条件边：analyze 之后该去哪个节点？
 
@@ -360,8 +405,17 @@ def route_after_analyze(state: AgentState) -> str:
       - state["needs_clarification"] 为真 → 返回 "clarify"
       - 否则                              → 返回 "lookup_error"
     返回的字符串必须是下面 add_conditional_edges 映射表里的某个 key。
+
+    动态路由（agentic 雏形）：
+      - 信息不足            → "clarify"（先反问）
+      - 问题里真有错误码    → "lookup_error"（查表，再检索）
+      - 否则                → "retrieve"（没码就别白跑查表，直接检索）
     """
-    raise NotImplementedError("route_after_analyze 待填")
+    if state["needs_clarification"]:
+        return "clarify"
+    if state["analysis"]["error_code"]:
+        return "lookup_error"
+    return "retrieve"
 
 
 # ---------- 把节点和边连成图，编译成可运行对象（模块加载时一次）----------
@@ -371,28 +425,30 @@ _graph.add_node("clarify", clarify_node)
 _graph.add_node("lookup_error", lookup_error_node)
 _graph.add_node("retrieve", retrieve_node)
 _graph.add_node("generate", generate_node)
+_graph.add_node("refine", refine_node)
 
 _graph.set_entry_point("analyze")
 _graph.add_conditional_edges(  # analyze 后，按 route_after_analyze 的返回值分叉
     "analyze",
     route_after_analyze,
-    {"clarify": "clarify", "lookup_error": "lookup_error"},
+    {"clarify": "clarify", "lookup_error": "lookup_error", "retrieve": "retrieve"},
 )
 _graph.add_edge("clarify", END)  # 反问完直接结束
 _graph.add_edge("lookup_error", "retrieve")
 _graph.add_edge("retrieve", "generate")
-_graph.add_edge("generate", END)
+_graph.add_conditional_edges(  # generate 后：够好就 END，不够就回 refine 再来一轮（形成环）
+    "generate",
+    route_after_generate,
+    {"refine": "refine", "end": END},
+)
+_graph.add_edge("refine", "retrieve")  # refine 完回到检索 → 这条"回边"就是 LangGraph 的环
 
 APP_GRAPH = _graph.compile()
 
 
-def ask_structured(query: str, history: list[dict] | None = None) -> dict:
-    """RAG 问答主流程（LangGraph 版）：组装初始 state → 跑图 → 整理成结构化结果。
-
-    输出契约与原来完全一致（answer/tools_used/error/cases/sources/...），
-    所以 app.py 和测试都不用改。
-    """
-    init_state: AgentState = {
+def _init_state(query: str, history: list[dict] | None) -> AgentState:
+    """组装跑图用的初始 state（所有字段都给默认值）。"""
+    return {
         "query": query,
         "history": history or [],
         "analysis": {},
@@ -403,9 +459,13 @@ def ask_structured(query: str, history: list[dict] | None = None) -> dict:
         "tools_used": [],
         "answer": "",
         "needs_clarification": False,
+        "retrieval_query": "",
+        "retries": 0,
     }
-    final = APP_GRAPH.invoke(init_state)
 
+
+def _finalize(final: dict) -> dict:
+    """把图跑完的最终 state 整理成对外的结构化结果（契约不变）。"""
     return {
         "answer": final["answer"],
         "tools_used": final["tools_used"],
@@ -418,6 +478,43 @@ def ask_structured(query: str, history: list[dict] | None = None) -> dict:
         "provider_model": MODEL,
         "needs_clarification": final["needs_clarification"],
     }
+
+
+def ask_structured(query: str, history: list[dict] | None = None) -> dict:
+    """RAG 问答主流程（LangGraph 版）：组装初始 state → 跑图 → 整理成结构化结果。
+
+    输出契约与原来完全一致（answer/tools_used/error/cases/sources/...），
+    所以 app.py 和测试都不用改。
+    """
+    final = APP_GRAPH.invoke(_init_state(query, history))
+    return _finalize(final)
+
+
+# 节点 → 给用户看的友好进度文案（流式时显示）
+NODE_LABELS = {
+    "analyze": "分析问题…",
+    "clarify": "信息不足，整理反问…",
+    "lookup_error": "查错误码表…",
+    "retrieve": "检索历史案例 + 文档…",
+    "refine": "答案不足，换个检索词再来一轮…",
+    "generate": "生成答案…",
+}
+
+
+def ask_structured_stream(query: str, history: list[dict] | None = None):
+    """流式版：每跑完一个节点 yield ("progress", 友好文案)；最后 yield ("done", 结构化结果)。
+
+    用 APP_GRAPH.stream() 一步步拿到"哪个节点刚跑完 + 它改了哪些字段"，
+    一边累积状态，一边把进度推给前端。
+    """
+    state = _init_state(query, history)
+    for step in APP_GRAPH.stream(state):
+        # step 形如 {节点名: 该节点返回的部分state}（本图是线性的，一步就一个节点）
+        for node_name, partial in step.items():
+            if partial:
+                state = {**state, **partial}  # 累积更新（与节点返回的合并语义一致）
+            yield ("progress", NODE_LABELS.get(node_name, node_name))
+    yield ("done", _finalize(state))
 
 
 def ask(query: str, history: list[dict] | None = None) -> str:
