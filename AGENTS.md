@@ -15,13 +15,14 @@
 - **Memory**: 短期对话上下文 + 长期 cases.jsonl 沉淀
 - **Retrieval**: ChromaDB 向量 + BM25 关键词 + RRF 融合
 
-> 注：Agent 框架 LangGraph vs 手写 loop 待定。第一版先手写 loop 跑通再考虑 LangGraph。Memory 层暂不做 LLM 自动摘要等重设计。
+> 注：Agent 已用 **LangGraph 重构**（StateGraph：analyze→动态路由→工具→generate→**自我纠错回路**），含**节点级流式**。Memory 层仍是 cases.jsonl 关键词检索，向量化待 ROADMAP #2。
 
 ## 技术栈
 | 用途 | 选型 |
 |---|---|
 | LLM | GPT-5（公司可选）/ Claude Opus 4.8（公司 Anthropic 兼容网关）/ DeepSeek（家里） |
-| 检索 | ChromaDB + rank_bm25 + RRF |
+| 检索 | ChromaDB + rank_bm25 + RRF（+ BGE-reranker 精排，规划中 ROADMAP #1） |
+| 编排 | LangGraph StateGraph（动态路由 / 工具 / 自我纠错回路 / 节点级流式） |
 | 嵌入模型 | paraphrase-multilingual-MiniLM-L12-v2（跨语言中英文） |
 | 前端 | Streamlit |
 | 语言 | Python 3.11.9 |
@@ -38,10 +39,11 @@ src/
 ├── ingest.py       # 切片+向量化入库（已完成，545 chunks）
 ├── retrieve.py     # 混合检索 向量+BM25+RRF（已完成）
 ├── llm.py          # LLM 提供方抽象 GPT-5/Opus(公司)/DeepSeek(家里)（已完成）
-├── memory.py       # 长期记忆（待开发）
-├── agent.py        # Agent核心（MVP 跑通：查表+RAG+多轮上下文+澄清反问）
-└── app.py          # Streamlit前端（已完成第一版）
+├── memory.py       # 案例检索 search_cases（已完成，cases.jsonl 关键词版）
+├── agent.py        # Agent核心（LangGraph 图：动态路由+工具+自我纠错回路+流式）
+└── app.py          # Streamlit前端（聊天+节点级进度+来源展示）
 ```
+> 根目录 `ROADMAP.md`：升级路线（Reranker / 记忆向量化 / HyDE / FastAPI+SSE / MCP / Docker / 微调）+ 知识补给清单。
 
 ## 进度
 - [x] ingest.py — 545 chunks 入库 ChromaDB
@@ -53,6 +55,13 @@ src/
 - [x] memory.py / search_cases 第一版 — 从 `data/cases.jsonl` 检索 FAE 历史案例并放入 Agent prompt
 - [x] 结构化回答 / 来源展示第一版 — 前端展示 tools_used、错误码查表、历史案例、参考文档
 - [x] 小型 eval 第一版 — 固定错误码、澄清反问、历史案例、结构化来源四类回归测试
+- [x] LangGraph 重构 — ask_structured 迁移成图（State/节点/条件边），等价迁移测试 4/4
+- [x] 动态路由 — 按意图分流：有错误码才查表，口语模糊先反问，其它直接检索
+- [x] 自我纠错回路 — generate 后答案弱（"未覆盖"）则 refine 加宽检索词回 retrieve 再答一轮（MAX_RETRIES 防死循环）
+- [x] 节点级流式 — ask_structured_stream + app.py st.status 实时显示 分析→查表→检索→生成
+- [x] 案例已 3 条 — adb 设备 / OTA send DA fail(0xC0060003) / D0552 strong integrity
+- [ ] **进行中：ROADMAP #1 Reranker** — BGE-reranker-base 走 hf-mirror 下载中，计划 RRF 后加 Cross-Encoder 精排
+- [ ] 规划：见 ROADMAP.md（记忆向量化 / HyDE / FastAPI+SSE / MCP / Docker / 微调，按优先级）
 
 ## 当前可用效果
 - `刷卡返回 -70004 怎么排查？`：先走 `lookup_error` 精确查表，识别 `-70004 = APDU Error`，再结合真实 SDK 文档生成排查建议
@@ -62,8 +71,9 @@ src/
 - 前端回答下方可展开查看：命中的工具、错误码释义、历史案例和参考文档来源
 - provider 已按电脑环境拆开：公司电脑用 GPT-5/Opus，家庭电脑用 DeepSeek；代码层通过 `LLM_PROVIDER` 切换，不改源码
 
-## Agent MVP（当前版，手写 loop 不用 LangGraph）
-目标：一问一答跑通——`ask("刷卡-70004怎么办")` 返回基于真实文档的中文排查建议。
+## Agent（当前版：LangGraph 图，已不是手写 loop）
+> 权威流程图见 `src/agent.py` 顶部的图注。节点：analyze / clarify / lookup_error / retrieve / generate / refine。
+目标：`ask_structured("刷卡-70004怎么办")` 返回基于真实文档的中文排查建议 + 结构化来源。
 
 当前数据流：
 用户问题 → analyze_query() 路由分析 → 信息不足则反问 / 有错误码则 lookup_error() 精确查表 → search() 检索top5碎片 → 拼 prompt（最近对话历史 + 错误码释义 + 参考资料）→ 当前 provider（GPT-5 / Opus / DeepSeek）生成 → 返回答案
@@ -78,8 +88,8 @@ src/
 
 prompt 原则：开卷考试，把文档摆给 LLM，文档没有就说"未找到"，禁止编造（防幻觉）。
 
-当前仍刻意不做（留后续）：持久化会话 / 长期记忆 / 自动案例沉淀 / LangGraph。
-迭代路线：MVP → 多轮 → 工具调用(search/lookup_error/search_cases) → 反问澄清 → 小型 eval →（再考虑 LangGraph 重构）
+当前仍刻意不做（留后续）：持久化会话 / 记忆向量化 / 自动案例沉淀。
+迭代路线：MVP → 多轮 → 工具调用 → 反问澄清 → 小型 eval → ✅LangGraph 重构（动态路由+自我纠错+流式）→ **升级阶段见 ROADMAP.md（#1 Reranker 起步）**
 
 ## 已知待优化
 - keyword_search 每次重建 BM25 索引（性能，agent 阶段优化）
@@ -104,6 +114,8 @@ prompt 原则：开卷考试，把文档摆给 LLM，文档没有就说"未找�
 - **pip 直连公网 PyPI，不需要代理**（连公司 wifi 即可上外网，实测 200/0.3s）。早期"pip 加 --proxy 127.0.0.1:7897"是旧/家里环境，公司电脑别用
 - **HuggingFace 必须离线**：公司网络会重置 huggingface.co 连接（10054）。ingest.py / retrieve.py 顶部已 `os.environ.setdefault("HF_HUB_OFFLINE","1")` 走本地缓存
 - **嵌入库锁 <5**：`sentence-transformers 4.1.0` / `transformers 4.57.6` / `huggingface_hub 0.36.2`。5.x 会把纯文本模型 paraphrase-multilingual-MiniLM-L12-v2 当多模态走 AutoProcessor 而崩溃，被环境升级到 5.x 时要重新降级
+- **下载新 HF 模型走镜像**：`huggingface.co` 被重置（curl 000），但 `hf-mirror.com` 通（200）。下新模型（如 reranker）用 `HF_ENDPOINT=https://hf-mirror.com python -c "..."`，缓存后再回离线。已用此法下 `BAAI/bge-reranker-base`
+- **算力：本机纯 CPU**（torch `+cpu`，无 GPU，12 核）。微调只能做 CPU 友好小任务（意图分类：冻结嵌入 + 小分类头）；查询重写 / LLM 微调需免费云 GPU（Colab/Kaggle/AutoDL）。详见 ROADMAP #8
 
 ### 家庭电脑（下班继续开发，只能连 DeepSeek）
 - 家庭电脑复制 `env.home.example` 为 `.env`：`Copy-Item env.home.example .env`

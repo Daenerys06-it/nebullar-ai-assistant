@@ -23,3 +23,6 @@ data/raw/
 
 # Logs (Streamlit 等运行日志)
 *.log
+
+# 个人文件（简历等，勿提交）
+CV.jpg
