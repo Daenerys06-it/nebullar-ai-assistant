@@ -26,7 +26,7 @@
 
 | # | 升级 | 改哪里 | 学到的概念 | 难度 |
 |---|---|---|---|---|
-| 1 | **加 Reranker 精排** | retrieve.py（RRF 后再排一层） | Cross-Encoder 重排、召回 vs 精排 | ⭐ |
+| 1 | ✅ **加 Reranker 精排（已完成）** | retrieve.py（RRF 召回 top20 → Cross-Encoder 精排 top5） | Cross-Encoder 重排、召回 vs 精排 | ⭐ |
 | 2 | **案例/记忆落库 + 向量化** | memory.py（jsonl → SQLite/pgvector + 向量检索） | 长期记忆、向量库 CRUD | ⭐⭐ |
 | 3 | **HyDE / Multi-Query** | retrieve.py（检索前先扩写） | 查询扩展、假设文档 | ⭐⭐ |
 | 4 | **FastAPI + SSE 后端** | 新增 api.py（Streamlit 仍留作演示） | 前后端分离、流式协议 | ⭐⭐ |

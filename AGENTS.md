@@ -60,7 +60,8 @@ src/
 - [x] 自我纠错回路 — generate 后答案弱（"未覆盖"）则 refine 加宽检索词回 retrieve 再答一轮（MAX_RETRIES 防死循环）
 - [x] 节点级流式 — ask_structured_stream + app.py st.status 实时显示 分析→查表→检索→生成
 - [x] 案例已 3 条 — adb 设备 / OTA send DA fail(0xC0060003) / D0552 strong integrity
-- [ ] **进行中：ROADMAP #1 Reranker** — BGE-reranker-base 走 hf-mirror 下载中，计划 RRF 后加 Cross-Encoder 精排
+- [x] **ROADMAP #1 Reranker 完成** — retrieve.py RRF 召回 top20 → BGE-reranker-base Cross-Encoder 精排 top5（`rerank()` + 懒加载 + 家里机器优雅降级），测试 4/4
+- [ ] 进行中：ROADMAP #2 案例记忆向量化 — search_cases 从关键词升级成向量检索
 - [ ] 规划：见 ROADMAP.md（记忆向量化 / HyDE / FastAPI+SSE / MCP / Docker / 微调，按优先级）
 
 ## 当前可用效果
