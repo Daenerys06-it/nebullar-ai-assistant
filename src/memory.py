@@ -1,18 +1,21 @@
 """Long-term support cases.
 
-第一版先做轻量 JSONL 检索：
-- cases.jsonl 保存 FAE 支持案例
-- search_cases(query) 按关键词命中相关案例
+案例记忆层：
+- cases.jsonl 保存 FAE 支持案例（手动沉淀）
+- search_cases(query) 用嵌入向量做语义检索，命中最相关的案例放进 Agent prompt
 
-后续如果案例量变大，再把 cases 也做向量化或接入 ChromaDB。
+#2：从关键词匹配升级成向量语义检索（和文档 RAG 同一套路）。
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 from functools import lru_cache
+
+# 强制 HuggingFace 离线（同 ingest/retrieve）：嵌入模型已本地缓存，公司网会重置 huggingface.co
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -27,14 +30,6 @@ CASE_FIELDS = [
     "product",
     "tags",
 ]
-
-
-ALIASES = {
-    "adb": ["adb", "adb devices"],
-    "device": ["设备", "device", "终端", "机器"],
-    "not_found": ["查不到", "看不到", "识别不到", "没有设备", "连不上", "无法识别", "not found", "unauthorized"],
-    "debugging": ["debug", "debugging", "usb debugging", "usb调试", "调试", "开发者模式", "开发者选项"],
-}
 
 
 @lru_cache(maxsize=1)
@@ -64,6 +59,7 @@ def load_cases() -> list[dict]:
 
 
 def _case_text(case: dict) -> str:
+    """把一条案例的关键字段拼成一段文本，用来编码成向量。"""
     parts = []
     for field in CASE_FIELDS:
         value = case.get(field, "")
@@ -74,47 +70,72 @@ def _case_text(case: dict) -> str:
     return " ".join(parts).lower()
 
 
-def _query_terms(query: str) -> set[str]:
-    text = query.lower()
-    terms = set(re.findall(r"[a-zA-Z0-9_+-]+|[\u4e00-\u9fff]{2,}", text))
+# ---------- 案例向量化检索（#2：关键词 → 语义）----------
+# 和文档 RAG 同理：每条案例编码成向量，问题也编码成向量，算余弦相似度找最像的。
+# 复用文档用的同一个嵌入模型，不另外下载。
+EMBED_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+MIN_SIM = 0.3  # 相似度阈值：低于它视为不相关，不塞进 prompt（避免硬凑案例）
 
-    for aliases in ALIASES.values():
-        if any(alias.lower() in text for alias in aliases):
-            terms.update(alias.lower() for alias in aliases)
-
-    return {term for term in terms if term.strip()}
+_EMBEDDER = None
 
 
-def _score_case(query: str, case: dict) -> int:
-    text = _case_text(case)
-    terms = _query_terms(query)
-    score = 0
+def _get_embedder():
+    """懒加载嵌入模型（和 ingest 用的同一个，已本地缓存）。"""
+    global _EMBEDDER
+    if _EMBEDDER is None:
+        from sentence_transformers import SentenceTransformer
 
-    for term in terms:
-        if term in text:
-            score += 2 if len(term) >= 3 else 1
+        _EMBEDDER = SentenceTransformer(EMBED_MODEL)
+    return _EMBEDDER
 
-    query_lower = query.lower()
-    # ADB 连接类问题的强特征组合：同时提到 adb/设备/识别问题时，提高案例优先级。
-    if any(k in query_lower for k in ["adb", "电脑", "usb"]) and any(
-        k in query_lower for k in ["查不到", "看不到", "识别不到", "没有设备", "连不上", "device"]
-    ):
-        if "adb" in text and ("开发者模式" in text or "debugging" in text):
-            score += 8
 
-    return score
+# @是注释器  lru_cache = 记住函数的返回结果(缓存)。同样的调用第二次直接返回上次的结果,不再执行函数体。
+# lru_cache=@Cacheable
+# 第 1 次调用:真的跑一遍,把 N 条案例编码成向量(慢,几秒),结果存进缓存
+# 之后每次调用:直接返回缓存的向量,不再重新编码
+@lru_cache(maxsize=1)
+def _case_vectors():
+    """把所有案例编码成归一化向量并缓存（案例不变只算一次）。
+
+    返回 (cases, vecs)：cases=案例列表；vecs shape=(N, 384) 归一化矩阵。
+    归一化后，余弦相似度 = 向量点积（算起来简单）。
+    """
+    cases = load_cases()
+    if not cases:
+        return [], None
+    texts = [_case_text(c) for c in cases]
+    vecs = _get_embedder().encode(texts, normalize_embeddings=True)
+    return cases, vecs
 
 
 def search_cases(query: str, top_k: int = 3) -> list[dict]:
-    """Search support cases by query and return the best matches."""
-    scored = []
-    for case in load_cases():
-        score = _score_case(query, case)
-        if score > 0:
-            scored.append((score, case))
+    """【★你来填★】语义检索：把 query 编码成向量，找最相似的 top_k 条案例。
 
-    scored.sort(key=lambda item: item[0], reverse=True)
-    return [case for _, case in scored[:top_k]]
+    脚手架已给你：
+        cases, vecs = _case_vectors()   # vecs:(N,384) 归一化矩阵，cases:案例列表
+        vecs : (N, 384)   ← N 条案例，每条一个 384 维向量（一行一条）
+        qv   : (384,)     ← query 的 384 维向量,归一化向量。
+
+    要做的 4 步：
+        ① 算相似度：sims =
+             # 矩阵(N,384) × 向量(384,) → (N,)，每条案例一个余弦分（归一化后点积=余弦）
+        ② 排下标：order = sims.argsort()[::-1][:top_k]
+             # argsort 给升序下标 → [::-1] 反成降序 → 取前 top_k
+        ③ 过滤+取案例：遍历 order 里的 i，只有 sims[i] >= MIN_SIM 才把 cases[i] 收进结果
+        ④ 返回结果列表
+    """
+    cases, vecs = _case_vectors()
+    if not cases:                 # 空案例：必须在用 vecs 之前挡，否则 None @ qv 会崩
+        return []
+    qv = _get_embedder().encode([query], normalize_embeddings=True)[0]
+    # @ 是矩阵乘法：vecs(N,384) × qv(384,) → sims(N,)，每条案例一个余弦分
+    sims = vecs @ qv
+    order = sims.argsort()[::-1][:top_k]
+    result = []
+    for i in order:
+        if sims[i] >= MIN_SIM:    # 低于阈值的视为不相关，丢掉
+            result.append(cases[i])
+    return result
 
 
 def build_cases_context(cases: list[dict]) -> str:
