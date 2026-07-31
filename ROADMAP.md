@@ -17,6 +17,8 @@
 - ✅ 工具调用（错误码查表、案例检索）
 - ✅ 多轮上下文、反问澄清、结构化返回
 - ✅ provider 抽象 + fallback、回归测试
+- ✅ Reranker / Cross-Encoder 精排（召回 → 精排两阶段）
+- ✅ 案例向量化语义检索（Bi-Encoder + 余弦 + 阈值）
 
 "懂得很少"是错觉——这领域名词密集，但你已经握住了 RAG + Agent 的主干。下面是把主干加粗、加宽。
 
@@ -27,10 +29,10 @@
 | # | 升级 | 改哪里 | 学到的概念 | 难度 |
 |---|---|---|---|---|
 | 1 | ✅ **加 Reranker 精排（已完成）** | retrieve.py（RRF 召回 top20 → Cross-Encoder 精排 top5） | Cross-Encoder 重排、召回 vs 精排 | ⭐ |
-| 2 | **案例/记忆落库 + 向量化** | memory.py（jsonl → SQLite/pgvector + 向量检索） | 长期记忆、向量库 CRUD | ⭐⭐ |
-| 3 | **HyDE / Multi-Query** | retrieve.py（检索前先扩写） | 查询扩展、假设文档 | ⭐⭐ |
-| 4 | **FastAPI + SSE 后端** | 新增 api.py（Streamlit 仍留作演示） | 前后端分离、流式协议 | ⭐⭐ |
-| 5 | **工具 MCP 化** | 新增 mcp_server.py（FastMCP 暴露 3 个工具） | MCP 协议、工具标准化 | ⭐⭐ |
+| 2 | ✅ **案例向量化（已完成）** | memory.py（search_cases 关键词→语义：嵌入+余弦+阈值） | 向量语义检索、Bi-Encoder | ⭐⭐ |
+| 3 | ✅ **HyDE / Multi-Query（已完成）** | retrieve.py（检索前扩展查询） | 查询扩展、假设文档 | ⭐⭐ |
+| 4 | ✅ **FastAPI + SSE 后端（已完成）** | api.py + static/index.html（Streamlit 仍留作演示） | 前后端分离、流式协议 | ⭐⭐ |
+| 5 | **MCP 工具化**（下一个） | mcp_server.py（FastMCP 暴露工具） | MCP 协议、工具标准化 | ⭐⭐ |
 | 6 | **Docker + LangSmith 追踪** | Dockerfile + 环境变量 | 容器化、可观测/链路追踪 | ⭐⭐ |
 | 7 | **多智能体拆分** | agent.py（拆 Router + 子图/Subagent） | Supervisor/Handoff/子图 | ⭐⭐⭐ |
 | 8 | ⭐**微调小实验** | 新目录 finetune/（LoRA 微调查询重写/意图分类） | SFT、LoRA/QLoRA、数据集构造、评测 | ⭐⭐⭐⭐ |
@@ -45,9 +47,9 @@
 - ✅ **Embedding**：把文字转成向量，语义近 = 距离近
 - ✅ **BM25**：基于词频的关键词匹配
 - ✅ **RRF**：把多路检索的排名融合
-- ⬜ **Reranker（Cross-Encoder）**：把"问题+候选文档"一起送进模型打分，比向量精准；用于"召回一批 → 精排前几"
-- ⬜ **HyDE**：先让 LLM "假设"一个答案文档，用它的向量去检索（比原始问题更贴）
-- ⬜ **Multi-Query**：把一个问题改写成多个角度再分别检索，合并结果
+- ✅ **Reranker（Cross-Encoder）**：把"问题+候选文档"一起送进模型打分，比向量精准；用于"召回一批 → 精排前几"
+- ✅ **HyDE**：先让 LLM "假设"一个答案文档，用它的向量去检索（比原始问题更贴）
+- ✅ **Multi-Query**：把一个问题改写成多个角度再分别检索，合并结果
 - ⬜ **Chunking 策略**：按标题/语义切块，影响召回质量
 
 ### B. Agent / LangGraph 进阶
@@ -59,8 +61,8 @@
 - ⬜ **MCP**：Model Context Protocol，把工具/数据源标准化暴露给任意 LLM 客户端
 
 ### C. 工程化 / 部署
-- ⬜ **FastAPI**：Python 主流后端框架，把 Agent 包成 HTTP 接口
-- ⬜ **SSE 流式**：Server-Sent Events，服务器逐字推送（打字机效果的协议）
+- ✅ **FastAPI**：Python 主流后端框架，Agent 已包成 HTTP 接口
+- ✅ **SSE 流式**：Server-Sent Events，已实现打字机效果
 - ⬜ **向量库生产化**：Milvus / pgvector（vs 轻量 Chroma）
 - ⬜ **PostgreSQL**：存对话、案例、长期记忆
 - ⬜ **Docker**：容器化，一键部署
@@ -78,10 +80,12 @@
 
 ## 3. 建议节奏
 
-1. **先 #1 Reranker**（最小投入、立竿见影），顺带学透"召回 vs 精排 + Cross-Encoder"
-2. 再 **#2 记忆落库**，学"长期记忆 + 向量库 CRUD"
-3. 然后 **#4 FastAPI+SSE**，补工程化短板
-4. 中间穿插补 **B 区概念**（ReAct / Tool Calling / 多智能体）
-5. 最后挑战 **#8 微调小实验**——这是和 CV 拉平的关键一招
+1. ✅ #1 Reranker（召回 vs 精排 + Cross-Encoder）—— 已完成
+2. ✅ #2 案例向量化（向量语义检索 + Bi-Encoder）—— 已完成
+3. ✅ #3 HyDE / Multi-Query：查询扩展，再提一档召回质量 —— 已完成
+4. ✅ #4 FastAPI+SSE 补工程化 —— 已完成
+5. **下一步 #5 MCP 工具化**：把工具标准化暴露给任意 LLM 客户端
+6. 然后 #6 Docker+LangSmith；中间穿插 B 区概念（ReAct / Tool Calling / 多智能体）
+7. 最后挑战 **#8 微调小实验**——和 CV 拉平的关键一招
 
 > 学习方式沿用老规矩：**每个升级先讲概念 → 给骨架留空 → 你填核心 → 我补修**。一个升级 = 学一个知识点 + 落一段代码。

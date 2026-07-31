@@ -13,6 +13,10 @@ from llm import (
 )  # 提供方抽象：按 .env 选 Opus(公司) 或 DeepSeek(家里)
 from memory import build_cases_context, search_cases
 from retrieve import search  # 混合检索入口：一个问题 → 最相关的文档片段
+from memory_db import get_memory_db  # 记忆数据库
+
+# 初始化记忆数据库
+memory_db = get_memory_db()
 
 # 【第1步：照抄】错误码精确查表数据：模块加载时读一次（别每次查都重读文件）
 _BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -92,6 +96,63 @@ def build_history_context(history: list[dict] | None, max_messages: int = 6) -> 
         + "\n".join(lines)
         + "\n\n"
     )
+
+
+
+
+# ---------- 多轮对话查询重写 ----------
+
+def rewrite_query_with_context(query: str, history: list[dict] | None) -> str:
+    """基于历史对话重写查询，处理指代和省略。
+    
+    示例:
+        历史: 用户: D0551怎么刷机？  助手: 步骤1...步骤2...
+        当前: 那个bin文件在哪里？
+        重写: D0551刷机的bin文件在哪里？
+    """
+    if not history or len(history) < 2:
+        return query
+    
+    # 取最近2轮对话
+    recent = history[-4:]  # 最近2轮（user+assistant各2条）
+    history_text = " ".join([m.get("content", "") for m in recent]).lower()
+    
+    rewritten = query
+    
+    # 1. 处理指代词（那个/这个/它/刚才）
+    pronouns = ["那个", "这个", "它", "刚才", "之前", "上面"]
+    if any(p in query for p in pronouns):
+        # 从历史中提取设备型号
+        import re
+        device_match = re.search(r'(d0551|d0552|p18|d5|双屏)', history_text)
+        if device_match and device_match.group(1).upper() not in query.upper():
+            rewritten = f"{device_match.group(1).upper()} {rewritten}"
+        
+        # 从历史中提取操作类型
+        if any(k in history_text for k in ["刷机", "flash"]) and not any(k in query.lower() for k in ["刷机", "flash"]):
+            rewritten = f"刷机 {rewritten}"
+        elif any(k in history_text for k in ["写号", "sn", "imei", "barcode"]) and not any(k in query.lower() for k in ["写号", "sn"]):
+            rewritten = f"写号 {rewritten}"
+    
+    # 2. 处理省略（单独的名词短语）
+    if len(query) < 10 and not query.startswith(("怎么", "如何", "什么", "哪里", "为什么")):
+        if "刷机" in history_text and "刷机" not in query:
+            rewritten = f"刷机 {rewritten}"
+        elif "写号" in history_text and "写号" not in query:
+            rewritten = f"写号 {rewritten}"
+    
+    # 3. 处理"怎么办/什么意思"类追问
+    if query in ["怎么办", "什么意思", "怎么解决", "然后呢"]:
+        for m in reversed(history[:-1]):
+            if m.get("role") == "user":
+                prev_q = m.get("content", "")
+                rewritten = f"{prev_q} {query}"
+                break
+    
+    if rewritten != query:
+        print(f"[QueryRewrite] '{query}' -> '{rewritten}'")
+    
+    return rewritten
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -289,6 +350,10 @@ class AgentState(TypedDict):
     needs_clarification: bool  # analyze 节点产出：是否要先反问
     retrieval_query: str  # refine 节点产出：纠错回路时用的"加宽版"检索词
     retries: int  # 自我纠错已重试次数（防死循环）
+    # 记忆相关
+    user_id: Optional[str]  # 用户ID
+    session_id: Optional[str]  # 会话ID
+    user_profile: Optional[object]  # 用户画像
 
 
 # ---------- 节点们（每个都是 state -> 要更新的字段dict）----------
@@ -354,7 +419,7 @@ def retrieve_node(state: AgentState) -> dict:
     if cases and "search_cases" not in tools:  # 回路重跑时别重复记工具
         tools = tools + ["search_cases"]
 
-    docs = search(query, top_k=5, client=client, model=MODEL)
+    docs = search(query, top_k=5)  # 规则扩展，无需LLM
     if docs and "search_docs" not in tools:
         tools = tools + ["search_docs"]
 
@@ -446,7 +511,7 @@ _graph.add_edge("refine", "retrieve")  # refine 完回到检索 → 这条"回�
 APP_GRAPH = _graph.compile()
 
 
-def _init_state(query: str, history: list[dict] | None) -> AgentState:
+def _init_state(query: str, history: list[dict] | None, user_id: Optional[str] = None, session_id: Optional[str] = None) -> AgentState:
     """组装跑图用的初始 state（所有字段都给默认值）。"""
     return {
         "query": query,
@@ -461,6 +526,9 @@ def _init_state(query: str, history: list[dict] | None) -> AgentState:
         "needs_clarification": False,
         "retrieval_query": "",
         "retries": 0,
+        "user_id": user_id,
+        "session_id": session_id,
+        "user_profile": None,
     }
 
 
@@ -480,13 +548,55 @@ def _finalize(final: dict) -> dict:
     }
 
 
-def ask_structured(query: str, history: list[dict] | None = None) -> dict:
-    """RAG 问答主流程（LangGraph 版）：组装初始 state → 跑图 → 整理成结构化结果。
+def ask_structured(query: str, history: list[dict] | None = None,
+                   user_id: Optional[str] = None, session_id: Optional[str] = None) -> dict:
+    """RAG 问答主流程（记忆集成版）.
 
-    输出契约与原来完全一致（answer/tools_used/error/cases/sources/...），
-    所以 app.py 和测试都不用改。
+    新增参数:
+        user_id: 用户ID（用于加载用户画像和保存历史）
+        session_id: 会话ID（用于保存对话历史）
     """
-    final = APP_GRAPH.invoke(_init_state(query, history))
+    import time
+
+    # 1. 确保用户和会话存在
+    profile = None
+    if user_id:
+        profile = memory_db.create_or_update_user(user_id)
+        if session_id:
+            memory_db.create_session(session_id, user_id, title=query[:30])
+
+    # 2. 加载数据库中的对话历史
+    db_history = []
+    if session_id:
+        db_messages = memory_db.get_session_history(session_id, limit=10)
+        db_history = [{"role": m.role, "content": m.content} for m in db_messages]
+
+    combined_history = db_history + (history or [])
+
+    # 3. 初始化 state
+    state = _init_state(query, combined_history, user_id, session_id)
+    if profile:
+        state["user_profile"] = profile
+
+    # 4. 保存用户消息
+    if session_id and user_id:
+        memory_db.save_message(session_id, user_id, "user", query)
+
+    # 5. 运行 LangGraph
+    start_time = time.time()
+    final = APP_GRAPH.invoke(state)
+    latency_ms = int((time.time() - start_time) * 1000)
+
+    # 6. 保存助手消息
+    if session_id and user_id:
+        memory_db.save_message(
+            session_id, user_id, "assistant",
+            final["answer"],
+            tools_used=final["tools_used"],
+            cases_referenced=[c["id"] for c in final["cases"]] if final.get("cases") else None,
+            latency_ms=latency_ms
+        )
+
     return _finalize(final)
 
 
@@ -501,19 +611,58 @@ NODE_LABELS = {
 }
 
 
-def ask_structured_stream(query: str, history: list[dict] | None = None):
+def ask_structured_stream(query: str, history: list[dict] | None = None,
+                          user_id: str = None, session_id: str = None):
     """流式版：每跑完一个节点 yield ("progress", 友好文案)；最后 yield ("done", 结构化结果)。
 
     用 APP_GRAPH.stream() 一步步拿到"哪个节点刚跑完 + 它改了哪些字段"，
     一边累积状态，一边把进度推给前端。
     """
-    state = _init_state(query, history)
+    import time
+
+    # 1. 确保用户和会话存在
+    profile = None
+    if user_id:
+        profile = memory_db.create_or_update_user(user_id)
+        if session_id:
+            memory_db.create_session(session_id, user_id, title=query[:30])
+
+    # 2. 加载数据库中的对话历史
+    db_history = []
+    if session_id:
+        db_messages = memory_db.get_session_history(session_id, limit=10)
+        db_history = [{"role": m.role, "content": m.content} for m in db_messages]
+
+    combined_history = db_history + (history or [])
+
+    # 3. 初始化 state，传入记忆信息
+    state = _init_state(query, combined_history, user_id, session_id)
+    if profile:
+        state["user_profile"] = profile
+
+    # 4. 保存用户消息
+    if session_id and user_id:
+        memory_db.save_message(session_id, user_id, "user", query)
+
+    # 5. 流式运行
+    start_time = time.time()
     for step in APP_GRAPH.stream(state):
-        # step 形如 {节点名: 该节点返回的部分state}（本图是线性的，一步就一个节点）
         for node_name, partial in step.items():
             if partial:
-                state = {**state, **partial}  # 累积更新（与节点返回的合并语义一致）
+                state = {**state, **partial}
             yield ("progress", NODE_LABELS.get(node_name, node_name))
+
+    # 6. 计算耗时并保存助手消息
+    latency_ms = int((time.time() - start_time) * 1000)
+    if session_id and user_id:
+        memory_db.save_message(
+            session_id, user_id, "assistant",
+            state["answer"],
+            tools_used=state["tools_used"],
+            cases_referenced=[c["id"] for c in state["cases"]] if state.get("cases") else None,
+            latency_ms=latency_ms
+        )
+
     yield ("done", _finalize(state))
 
 
