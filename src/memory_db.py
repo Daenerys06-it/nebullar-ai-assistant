@@ -215,6 +215,33 @@ class MemoryDB:
         conn.close()
         return session_id
 
+    def get_user_sessions(self, user_id: str, limit: int = 10) -> List[Dict]:
+        """获取用户的历史会话列表"""
+        conn = self._get_conn()
+        cursor = conn.execute(
+            """SELECT session_id, title, created_at, updated_at,
+                      (SELECT COUNT(*) FROM messages
+                       WHERE messages.session_id = sessions.session_id) as msg_count
+               FROM sessions
+               WHERE user_id = ?
+               ORDER BY updated_at DESC
+               LIMIT ?""",
+            (user_id, limit)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+
+    def delete_session(self, session_id: str):
+        """删除会话及其消息"""
+        conn = self._get_conn()
+        # 先删除消息
+        conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        # 再删除会话
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        conn.commit()
+        conn.close()
+
     def get_active_session(self, user_id: str) -> Optional[Dict]:
         """获取用户当前活跃会话"""
         conn = self._get_conn()

@@ -1,13 +1,12 @@
 """Nebullar AI Assistant —— FastAPI 后端 + SSE 流式输出
 
-运行：uvicorn src.api:app --reload --port 8000
+运行：uvicorn src.api:app --reload --port 8501
 
 API 端点：
 - POST /chat/stream - SSE 流式对话（打字机效果）
 - POST /chat - 非流式对话（一次性返回）
 - GET /health - 健康检查
 - GET /config - 获取当前配置（模型、提供方）
-- GET / - 前端测试页面
 """
 
 import json
@@ -230,10 +229,7 @@ async def chat_stream(request: ChatRequest):
 
 @app.get("/")
 async def root():
-    """返回前端测试页面"""
-    index_path = os.path.join(STATIC_DIR, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
+    """API 根路径"""
     return {
         "name": "Nebullar AI Assistant API",
         "version": "1.0.0",
@@ -243,8 +239,7 @@ async def root():
             "config": "/config (GET) - 配置信息",
             "health": "/health (GET) - 健康检查"
         },
-        "docs": "/docs (Swagger UI)",
-        "note": "前端页面不存在，请访问 /docs 查看 API 文档"
+        "docs": "/docs (Swagger UI)"
     }
 
 
@@ -252,4 +247,4 @@ async def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8501)
