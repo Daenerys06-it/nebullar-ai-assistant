@@ -32,7 +32,7 @@
 | 2 | ✅ **案例向量化（已完成）** | memory.py（search_cases 关键词→语义：嵌入+余弦+阈值） | 向量语义检索、Bi-Encoder | ⭐⭐ |
 | 3 | ✅ **HyDE / Multi-Query（已完成）** | retrieve.py（检索前扩展查询） | 查询扩展、假设文档 | ⭐⭐ |
 | 4 | ✅ **FastAPI + SSE 后端（已完成）** | api.py + static/index.html（Streamlit 仍留作演示） | 前后端分离、流式协议 | ⭐⭐ |
-| 5 | **MCP 工具化**（下一个） | mcp_server.py（FastMCP 暴露工具） | MCP 协议、工具标准化 | ⭐⭐ |
+| 5 | ✅ **MCP 工具化**（已完成） | mcp_server.py（FastMCP 暴露6个工具） | MCP 协议、工具标准化 | ⭐⭐ |
 | 6 | **Docker + LangSmith 追踪** | Dockerfile + 环境变量 | 容器化、可观测/链路追踪 | ⭐⭐ |
 | 7 | **多智能体拆分** | agent.py（拆 Router + 子图/Subagent） | Supervisor/Handoff/子图 | ⭐⭐⭐ |
 | 8 | ⭐**微调小实验** | 新目录 finetune/（LoRA 微调查询重写/意图分类） | SFT、LoRA/QLoRA、数据集构造、评测 | ⭐⭐⭐⭐ |
@@ -50,7 +50,7 @@
 - ✅ **Reranker（Cross-Encoder）**：把"问题+候选文档"一起送进模型打分，比向量精准；用于"召回一批 → 精排前几"
 - ✅ **HyDE**：先让 LLM "假设"一个答案文档，用它的向量去检索（比原始问题更贴）
 - ✅ **Multi-Query**：把一个问题改写成多个角度再分别检索，合并结果
-- ⬜ **Chunking 策略**：按标题/语义切块，影响召回质量
+- ✅ **Chunking 策略**：按标题/语义切块，三级切分（结构→语义→元数据）
 
 ### B. Agent / LangGraph 进阶
 - ✅ **StateGraph / 条件边 / 环**：你已掌握
@@ -58,7 +58,7 @@
 - ⬜ **原生 Tool Calling**：让 LLM 自己输出"要调哪个工具+参数"，而非规则路由
 - ⬜ **多智能体**：Supervisor/Router 分发、Subagent 子任务、Handoff 交接、Subgraph 子图
 - ⬜ **Memory**：短期（对话窗口）vs 长期（落库可检索）；LangGraph 的 checkpointer 做持久化
-- ⬜ **MCP**：Model Context Protocol，把工具/数据源标准化暴露给任意 LLM 客户端
+- ✅ **MCP**：Model Context Protocol，把工具/数据源标准化暴露给任意 LLM 客户端
 
 ### C. 工程化 / 部署
 - ✅ **FastAPI**：Python 主流后端框架，Agent 已包成 HTTP 接口

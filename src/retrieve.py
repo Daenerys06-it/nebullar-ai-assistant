@@ -249,6 +249,9 @@ def vector_search(query: str, top_k: int = 10, use_cache: bool = True) -> list[d
             "score": round(1.0 - dist, 4),
             "product": meta.get("product", ""),
             "module": meta.get("module", ""),
+            "headers": meta.get("headers", []),
+            "header_path": meta.get("header_path", ""),
+            "chunk_type": meta.get("chunk_type", "text"),
         })
 
     # 3. 存入缓存
@@ -283,11 +286,15 @@ def keyword_search(query: str, top_k: int = 10, use_cache: bool = True) -> list[
 
     results = []
     for idx in top_indices:
+        meta = all_metas[idx] if idx < len(all_metas) else {}
         results.append({
             "content": all_docs[idx],
             "score": round(float(scores[idx]), 4),
-            "product": all_metas[idx].get("product", ""),
-            "module": all_metas[idx].get("module", ""),
+            "product": meta.get("product", ""),
+            "module": meta.get("module", ""),
+            "headers": meta.get("headers", []),
+            "header_path": meta.get("header_path", ""),
+            "chunk_type": meta.get("chunk_type", "text"),
         })
 
     # 3. 存入缓存

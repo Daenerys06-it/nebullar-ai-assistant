@@ -18,6 +18,9 @@ transformers<5
 # —— LangGraph 编排 ——
 langgraph>=0.0.50
 
+# —— MCP 工具化 ——
+mcp>=1.0.0                # Model Context Protocol
+
 # —— 文档切片 ——
 langchain>=0.1.0
 langchain-text-splitters>=0.1.0
