@@ -21,10 +21,12 @@ DB_DIR = os.path.join(BASE, "chroma_db")
 # ---------- 模型预加载 ----------
 _models_preloaded = False
 _reranker_instance = None
+_chroma_client = None
+_chroma_collection = None
 
 def preload_all_models():
     """预加载所有检索模型（在应用启动时调用）"""
-    global _models_preloaded, _reranker_instance
+    global _models_preloaded, _reranker_instance, _chroma_client, _chroma_collection
 
     if _models_preloaded:
         return
@@ -33,12 +35,12 @@ def preload_all_models():
 
     # 1. 预加载 ChromaDB 集合（避免首次连接耗时）
     print("[Preload] 连接 ChromaDB...")
-    client = chromadb.PersistentClient(path=DB_DIR)
+    _chroma_client = chromadb.PersistentClient(path=DB_DIR)
     try:
-        collection = client.get_collection("nebullar_docs")
+        _chroma_collection = _chroma_client.get_collection("nebullar_docs")
         # 预热查询
-        collection.query(query_texts=["test"], n_results=1)
-        print(f"[Preload] ChromaDB 已连接，文档数: {collection.count()}")
+        _chroma_collection.query(query_texts=["test"], n_results=1)
+        print(f"[Preload] ChromaDB 已连接，文档数: {_chroma_collection.count()}")
     except Exception as e:
         print(f"[Preload] ChromaDB 连接失败: {e}")
 
@@ -50,6 +52,19 @@ def preload_all_models():
 
     _models_preloaded = True
     print("[Preload] 检索模型预加载完成！")
+
+
+def _get_chroma_collection():
+    """获取 ChromaDB Collection（优先返回预加载实例）"""
+    global _chroma_collection, _chroma_client
+    if _chroma_collection is not None:
+        return _chroma_collection
+
+    # fallback: 新建连接
+    if _chroma_client is None:
+        _chroma_client = chromadb.PersistentClient(path=DB_DIR)
+    _chroma_collection = _chroma_client.get_collection("nebullar_docs")
+    return _chroma_collection
 
 
 def _get_reranker():
@@ -151,8 +166,10 @@ QUERY_EXPANSION_RULES = {
 }
 
 
-def expand_query_rules(query: str) -> list[str]:
+def expand_query_rules(query: str, max_expansions: int = 3) -> list[str]:
     """规则查询扩展：用同义词映射替代LLM生成。
+
+    优化：限制扩展数量，避免首次查询太慢（原5个→现3个）
 
     示例:
         "flashtool怎么用" -> ["flashtool怎么用", "flash_tool怎么用", "刷机工具怎么用"]
@@ -167,7 +184,7 @@ def expand_query_rules(query: str) -> list[str]:
             # 为每个同义词生成新查询
             for syn in synonyms:
                 new_query = query_lower.replace(keyword.lower(), syn.lower())
-                if new_query not in expansions and len(expansions) < 5:
+                if new_query not in expansions and len(expansions) < max_expansions:
                     expansions.append(new_query)
 
     return expansions
@@ -176,11 +193,22 @@ def expand_query_rules(query: str) -> list[str]:
 # ---------- 缓存层 ----------
 from functools import lru_cache
 import time
+import hashlib
 
 # 内存缓存：query -> (result, timestamp)
 _vector_search_cache: dict[str, tuple[list[dict], float]] = {}
 _keyword_search_cache: dict[str, tuple[list[dict], float]] = {}
+_rerank_cache: dict[str, tuple[list[dict], float]] = {}  # (query+候选hash) -> 精排结果
+_search_result_cache: dict[str, tuple[list[dict], float]] = {}  # 完整search结果缓存
 CACHE_TTL = 300  # 缓存有效期5分钟
+
+
+def _get_cache_key(query: str, candidates: list[dict]) -> str:
+    """生成精排缓存key：query + candidates内容hash"""
+    # 用候选文档内容生成hash（取前3个文档的前100字）
+    content_sig = "|".join([c["content"][:100] for c in candidates[:3]])
+    hash_sig = hashlib.md5(content_sig.encode()).hexdigest()[:16]
+    return f"{query}:{hash_sig}"
 
 
 def _get_from_cache(cache: dict, key: str, ttl: int = CACHE_TTL) -> list[dict] | None:
@@ -204,7 +232,9 @@ def get_cache_stats() -> dict:
     return {
         "vector_cache_size": len(_vector_search_cache),
         "keyword_cache_size": len(_keyword_search_cache),
-        "total_cached_queries": len(_vector_search_cache) + len(_keyword_search_cache),
+        "rerank_cache_size": len(_rerank_cache),
+        "search_result_cache_size": len(_search_result_cache),
+        "total_cached_queries": len(_vector_search_cache) + len(_keyword_search_cache) + len(_rerank_cache) + len(_search_result_cache),
         "cache_ttl_seconds": CACHE_TTL,
     }
 
@@ -213,6 +243,8 @@ def clear_search_cache():
     """清除检索缓存（案例更新后调用）"""
     _vector_search_cache.clear()
     _keyword_search_cache.clear()
+    _rerank_cache.clear()
+    _search_result_cache.clear()
     print("[Cache] 检索缓存已清除")
 
 
@@ -233,9 +265,8 @@ def vector_search(query: str, top_k: int = 10, use_cache: bool = True) -> list[d
             print(f"[Cache Hit] 向量检索: {query[:20]}...")
             return cached
 
-    # 2. 执行检索
-    client = chromadb.PersistentClient(path=DB_DIR)
-    collection = client.get_collection("nebullar_docs")
+    # 2. 执行检索（使用预加载的collection，避免重复连接）
+    collection = _get_chroma_collection()
     result = collection.query(query_texts=[query], n_results=top_k)
 
     docs = result["documents"][0]
@@ -270,9 +301,8 @@ def keyword_search(query: str, top_k: int = 10, use_cache: bool = True) -> list[
             print(f"[Cache Hit] 关键词检索: {query[:20]}...")
             return cached
 
-    # 2. 执行检索
-    client = chromadb.PersistentClient(path=DB_DIR)
-    collection = client.get_collection("nebullar_docs")
+    # 2. 执行检索（使用预加载的collection，避免重复连接）
+    collection = _get_chroma_collection()
     all_data = collection.get()
     all_docs = all_data["documents"]
     all_metas = all_data["metadatas"]
@@ -347,39 +377,38 @@ def reciprocal_rank_fusion(
 RERANKER_MODEL = "BAAI/bge-reranker-base"
 
 
-def rerank(query: str, candidates: list[dict], top_k: int = 5) -> list[dict]:
-    """【★你来填★】用 Cross-Encoder 给召回的候选精排，取真正最相关的 top_k。
+def rerank(query: str, candidates: list[dict], top_k: int = 5, use_cache: bool = True) -> list[dict]:
+    """【带缓存】用 Cross-Encoder 给召回的候选精排，取真正最相关的 top_k。
 
     candidates：RRF 融合后的候选，每个是 dict：
         {"content": "文档内容...", "product": "...", "module": "...", "rrf_score": 0.03}
-    你能用的：
-        model = _get_reranker()
-        model.predict([[query, 文本1], [query, 文本2], ...])  # 返回每个 pair 的分数（numpy 数组）
-    要做的 4 步：
-        ① 把每个候选拼成 [query, 候选["content"]] 的 pair 列表
-        ② model.predict(pairs) 得到分数数组
-        ③ 把分数写回每个候选：候选["rerank_score"] = float(对应分数)   # float() 把 numpy 数转成普通 float
-        ④ 按 rerank_score 从大到小排序，返回前 top_k 个
     """
-    if not candidates:          # 没候选直接返回，省得白加载模型
+    if not candidates:
         return []
-    model = _get_reranker()     # 拿到 Cross-Encoder 对象（填的时候这行被删了，加回来）
 
-    # 1. 拼成 pair 列表
+    # 1. 检查精排缓存
+    cache_key = _get_cache_key(query, candidates)
+    if use_cache:
+        cached = _get_from_cache(_rerank_cache, cache_key)
+        if cached is not None:
+            print(f"[Cache Hit] 精排结果: {query[:20]}...")
+            return cached[:top_k]
+
+    # 2. 执行精排
+    model = _get_reranker()
     pairs = [[query, c["content"]] for c in candidates]
-    # 2. 得到分数数组
-    # model 是 _get_reranker() new 出来的 CrossEncoder 对象
-    # .predict 是这个对象自带的库方法,把 [问题,文档] 配对打成相关性分数。
-    scores = model.predict(pairs)  # 返回numpy数组，和candidates对应
-    # 3. 写回每个候选（zip把两个列表配对遍历）
+    scores = model.predict(pairs)
+
     for c, s in zip(candidates, scores):
         c["rerank_score"] = float(s)
-    # lambda c: c["rerank_score"] —— 一个匿名函数(没名字的小函数)
-    # def 取分数(c):
-    # return c["rerank_score"]
 
-    # 4. 按 rerank_score 排序，取前 top_k 个.(sorted 返回新列表，不改变原列表+lambda,reverse=True 降序)
-    return sorted(candidates, key=lambda c: c["rerank_score"], reverse=True)[:top_k]
+    result = sorted(candidates, key=lambda c: c["rerank_score"], reverse=True)[:top_k]
+
+    # 3. 存入缓存
+    if use_cache:
+        _set_cache(_rerank_cache, cache_key, result)
+
+    return result
 
 
 # ---------- Multi-Query 查询扩展（#3）----------
@@ -427,7 +456,7 @@ def expand_queries(query: str, client, model, n: int = 2) -> list[str]:  # 3→2
         return [query]          # 出错就只用原始 query，别让检索崩
 
 
-def search(query: str, top_k: int = 5, use_expansion: bool = True) -> list[dict]:
+def search(query: str, top_k: int = 5, use_expansion: bool = True, use_cache: bool = True) -> list[dict]:
     """混合检索统一入口（规则扩展版）：
        规则查询扩展 → 每个 query 各自召回(向量+BM25+RRF) → 汇成去重候选池
        → Cross-Encoder 用「原始 query」精排 → 返回 top_k。
@@ -436,15 +465,25 @@ def search(query: str, top_k: int = 5, use_expansion: bool = True) -> list[dict]
         query: 用户查询
         top_k: 返回结果数量
         use_expansion: 是否使用规则扩展（默认True）
+        use_cache: 是否使用缓存（默认True）
 
     优化：
     - 用规则扩展替代LLM Multi-Query，节省5-8秒
+    - 限制扩展数量 max 3，避免首次查询太慢
+    - 添加完整结果缓存，相同query直接返回
     - 保留Cross-Encoder精排，保证质量
     """
-    # 规则扩展查询（替代LLM）
-    queries = expand_query_rules(query) if use_expansion else [query]
+    # 1. 检查完整结果缓存
+    if use_cache:
+        cached = _get_from_cache(_search_result_cache, query)
+        if cached is not None:
+            print(f"[Cache Hit] 完整检索结果: {query[:20]}...")
+            return cached[:top_k]
 
-    # 每个扩展 query 各自召回并 RRF，汇进一个按内容去重的候选池
+    # 2. 规则扩展查询（限制3个，替代LLM）
+    queries = expand_query_rules(query, max_expansions=3) if use_expansion else [query]
+
+    # 3. 每个扩展 query 各自召回并 RRF，汇进一个按内容去重的候选池
     pool: dict[str, dict] = {}
     for q in queries:
         v_res = vector_search(q, top_k * 2)
@@ -456,12 +495,18 @@ def search(query: str, top_k: int = 5, use_expansion: bool = True) -> list[dict]
                 pool[key] = doc
     candidates = list(pool.values())
 
-    # 精排：用「原始 query」对整个候选池打分，取真正最相关的 top_k
+    # 4. 精排：用「原始 query」对整个候选池打分，取真正最相关的 top_k
     try:
-        return rerank(query, candidates, top_k)
+        result = rerank(query, candidates, top_k)
     except Exception:
         # 没有 reranker 模型（如家里机器）就退回按 RRF 分排序
-        return sorted(candidates, key=lambda d: d["rrf_score"], reverse=True)[:top_k]
+        result = sorted(candidates, key=lambda d: d["rrf_score"], reverse=True)[:top_k]
+
+    # 5. 存入完整结果缓存
+    if use_cache:
+        _set_cache(_search_result_cache, query, result)
+
+    return result
 
 
 # Backwards compatibility alias

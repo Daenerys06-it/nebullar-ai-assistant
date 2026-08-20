@@ -7,6 +7,7 @@ Claude Code 打开项目后，请先阅读：
 ```text
 AGENTS.md
 ROADMAP.md   # 升级路线（对标主流 RAG/Agent 岗）+ 知识补给清单
+PROJECT_INTRO.md #项目大观介绍
 ```
 
 ## Claude Code 专属约定

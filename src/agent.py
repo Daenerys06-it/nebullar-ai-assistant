@@ -441,7 +441,8 @@ def generate_node(state: AgentState) -> dict:
 
 
 # 自我纠错回路：答案明显不足时，换更宽的检索词回 retrieve 再答一轮（最多 MAX_RETRIES 次）
-MAX_RETRIES = 1
+# 优化：设为0关闭，减少一半响应时间
+MAX_RETRIES = 0
 
 
 def route_after_generate(state: AgentState) -> str:
